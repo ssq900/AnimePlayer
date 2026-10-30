@@ -1,0 +1,203 @@
+/*
+ * Copyright (C) 2024-2026 OpenAni and contributors.
+ *
+ * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
+ * Use of this source code is governed by the GNU AGPLv3 license, which can be found at the following link.
+ *
+ * https://github.com/open-ani/ani/blob/main/LICENSE
+ */
+
+package me.him188.ani.utils.ktor
+
+import me.him188.ani.test.TestContainer
+import me.him188.ani.test.TestFactory
+import me.him188.ani.test.runDynamicTests
+import me.him188.ani.utils.ktor.UrlHelpers.computeAbsoluteUrl
+import me.him188.ani.utils.ktor.UrlHelpers.computeAbsoluteUrlOrNull
+import me.him188.ani.utils.ktor.UrlHelpers.computeSelectorUrl
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNull
+
+@TestContainer
+class UrlHelpersTest {
+    @Test
+    fun computeAbsoluteUrlOrNullTest() {
+        assertEquals(
+            "https://example.com/video.m3u8",
+            computeAbsoluteUrlOrNull("https://example.com/index.html", "video.m3u8"),
+        )
+        assertNull(computeAbsoluteUrlOrNull("https://example.com/", "1:foo"))
+        assertNull(computeAbsoluteUrlOrNull("https://example.com/", "https://host:bad/video.m3u8"))
+        assertNull(computeAbsoluteUrlOrNull("", "/video.m3u8"))
+    }
+
+    @TestFactory
+    fun computeSelectorUrlTest() = runDynamicTests {
+        fun case(
+            expected: String,
+            baseUrl: String,
+            rawUrl: String,
+        ) = add("$baseUrl + $rawUrl = $expected") {
+            assertEquals(expected, computeSelectorUrl(baseUrl, rawUrl))
+        }
+
+        // 同 host 的绝对 http 链接升级为 https
+        case(
+            "https://www.example.com/detail/20230207",
+            "https://www.example.com/search?query=x", "http://www.example.com/detail/20230207",
+        )
+
+        // www 前缀差异视为同 host
+        case(
+            "https://example.com/detail/20230207",
+            "https://www.example.com/search?query=x", "http://example.com/detail/20230207",
+        )
+        case(
+            "https://www.example.com/detail/20230207",
+            "https://example.com/search?query=x", "http://www.example.com/detail/20230207",
+        )
+
+        // 跨 host / 非默认端口 / base 非 https: 原样返回
+        case(
+            "http://other.example.com/detail/1.html",
+            "https://www.example.com/search?query=x", "http://other.example.com/detail/1.html",
+        )
+        case(
+            "http://www.example.com:8080/detail/1.html",
+            "https://www.example.com/search", "http://www.example.com:8080/detail/1.html",
+        )
+        case(
+            "http://www.example.com/detail/20230207",
+            "http://www.example.com/search?query=x", "http://www.example.com/detail/20230207",
+        )
+
+        // 相对链接解析后已是 https; query/fragment 保留
+        case(
+            "https://www.example.com/detail/1.html",
+            "https://www.example.com/search", "/detail/1.html",
+        )
+        case(
+            "https://www.example.com/detail/20230207?from=search#frag",
+            "https://www.example.com/search", "https://www.example.com/detail/20230207?from=search#frag",
+        )
+        case(
+            "https://www.example.com/detail/1.html?from=search#frag",
+            "https://www.example.com/search", "http://www.example.com/detail/1.html?from=search#frag",
+        )
+    }
+
+    @TestFactory
+    fun computeAbsoluteUrlTest() = runDynamicTests {
+        fun case(
+            expected: String,
+            baseUrl: String,
+            relativeUrl: String,
+        ) = add("$baseUrl + $relativeUrl = $expected") {
+            assertEquals(
+                expected,
+                computeAbsoluteUrl(baseUrl, relativeUrl),
+            )
+        }
+
+        case(
+            "https://example.com/relative",
+            "https://example.com", "relative",
+        )
+
+        case(
+            "https://example.com/relative",
+            "https://example.com/index.html", "relative",
+        )
+
+        case(
+            "https://example.com/a.b/relative",
+            "https://example.com/a.b/", "relative",
+        )
+
+        case(
+            "https://example.com/relative",
+            "https://example.com", "/relative",
+        )
+
+        case(
+            "https://example.com/relative",
+            "https://example.com/", "/relative",
+        )
+
+        case(
+            "https://example.com/relative/",
+            "https://example.com/", "/relative/",
+        )
+
+        case(
+            "https://example.com/relative/foo",
+            "https://example.com/", "/relative/foo",
+        )
+
+        case(
+            "https://example.com/relative/foo/../bar",
+            "https://example.com/", "/relative/foo/../bar",
+        )
+
+        case(
+            "https://example.com/relative/foo",
+            "https://example.com/test", "/relative/foo",
+        )
+
+        case(
+            "https://example.com/relative/foo",
+            "https://example.com/test/test", "/relative/foo",
+        )
+
+        case(
+            "https://example.com/relative/foo",
+            "https://example.com/test/test/", "/relative/foo",
+        )
+
+        case(
+            "https://example.com/relative/foo/",
+            "https://example.com/test/test/", "/relative/foo/",
+        )
+
+        case(
+            "https://example.com/",
+            "https://example.com/", "",
+        )
+
+        val encodedSubjectPath =
+            "/%E6%91%87%E6%BB%9A%E4%B9%83%E6%98%AF%E6%B7%91%E5%A5%B3%E7%9A%84%E7%88%B1%E5%A5%BD%20(2025)%20%5Btmdbid=260523%5D/"
+        case(
+            "http://37.187.76.11:8000$encodedSubjectPath",
+            "http://37.187.76.11:8000/?kw=keyword",
+            encodedSubjectPath,
+        )
+
+        case(
+            "http://192.168.31.2:8080/Downloads/TVAnimeSeason/202410/?raw=true",
+            "http://192.168.31.2:8080/Downloads/TVAnimeSeason/?raw=true",
+            "202410/?raw=true",
+        )
+
+        case(
+            "http://192.168.31.2:8080/Downloads/TVAnimeSeason/202410/?raw=true",
+            "http://192.168.31.2:8080/Downloads/TVAnimeSeason/?raw=true",
+            "/Downloads/TVAnimeSeason/202410/?raw=true",
+        )
+
+//        case(
+//            "/",
+//            "", "",
+//        )
+//
+//        case(
+//            "/test",
+//            "", "/test",
+//        )
+//
+//        case(
+//            "/test",
+//            "", "test",
+//        )
+    }
+}

@@ -1,0 +1,505 @@
+/*
+ * Copyright (C) 2024-2025 OpenAni and contributors.
+ *
+ * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
+ * Use of this source code is governed by the GNU AGPLv3 license, which can be found at the following link.
+ *
+ * https://github.com/open-ani/ani/blob/main/LICENSE
+ */
+
+package me.him188.ani.app.videoplayer.ui
+
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.BoxWithConstraintsScope
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeContent
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ProvideTextStyle
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import me.him188.ani.app.ui.foundation.animation.AniAnimatedVisibility
+import me.him188.ani.app.ui.foundation.animation.LocalAniMotionScheme
+import me.him188.ani.app.ui.foundation.layout.desktopTitleBar
+import me.him188.ani.app.ui.foundation.theme.slightlyWeaken
+import me.him188.ani.app.videoplayer.ui.gesture.PlayerGestureHost
+import me.him188.ani.app.videoplayer.ui.progress.PlayerControllerBar
+import me.him188.ani.app.videoplayer.ui.top.PlayerTopBar
+
+/**
+ * [VideoScaffold] 提供给 [VideoScaffold.rhsSheet] 的 window insets, 即传给框架的 `contentWindowInsets`.
+ *
+ * 侧边栏和其他控件不同: 它的背景要一直铺到屏幕边缘, 盖住系统栏和屏幕圆角, 只让里面的内容避开这些区域.
+ * 如果框架像对待其他控件那样在外层加边距, 侧边栏就会悬浮在离屏幕边缘一段距离的地方, 四周露出视频.
+ */
+val LocalVideoScaffoldSheetWindowInsets = compositionLocalOf<WindowInsets> { WindowInsets(0) }
+
+/**
+ * 视频播放器框架, 可以自定义组合控制器等部分.
+ *
+ * 视频播放器框架由以下层级组成, 由上至下:
+ *
+ * - 悬浮消息: [floatingMessage], 例如正在缓冲
+ * - 截图反馈: [screenshotOverlay], 闪光与截图预览面板
+ * - 左下提示: [leftBottomTips], 例如跳过 OP/ED 的提示
+ * - 控制器: [topBar], [rhsBar] 和 [bottomBar]
+ * - 手势: [gestureHost]
+ * - 弹幕: [danmakuHost]
+ * - 视频: [video]
+ * - 右侧侧边栏: [rhsSheet]
+ *
+ * @param topBar [PlayerTopBar]
+ * @param video [VideoPlayer]. video 不会接受到点击事件.
+ * @param danmakuHost 为 `DanmakuHost` 留的区域
+ * @param gestureHost 手势区域, 例如快进/快退, 音量调节等. See [PlayerGestureHost]
+ * @param floatingMessage 悬浮消息, 例如正在缓冲. 将会对齐到中央
+ * @param framePreviewOverlay 位于整个播放器区域正中央的叠层, 不应用系统窗口边距.
+ * @param rhsBar 右侧控制栏, 锁定手势等.
+ * @param rhsSheet 右侧侧边栏. 框架不为它应用 [contentWindowInsets], 而是通过 [LocalVideoScaffoldSheetWindowInsets] 提供给它.
+ * @param bottomBar [PlayerControllerBar]
+ * @param leftBottomTips 左下角的提示, 例如跳过 OP/ED 的提示气泡. 框架把它停在左下角、底部控制栏之上, 控制栏显隐时平滑跟随.
+ * @param screenshotOverlay 覆盖整个播放器区域的截图反馈层 (闪光、截图预览面板), 位于控制器之上、[rhsSheet] 之下.
+ * 参数是底部控制栏当前占用的高度 (不含系统栏边距, 隐藏时为 0), 面板据此避让.
+ * @param expanded 当前是否处于全屏模式. 全屏时此框架会 [Modifier.fillMaxSize], 否则会限制为一个 16:9 的框.
+ * @param layout 播放器内容与控制器的空间布局. [VideoScaffoldLayout.VerticalSplit] 时底部控制栏占据下半区,
+ * 此时 [screenshotOverlay] 收到的高度与 [leftBottomTips] 的抬升量都是整个下半区.
+ * @param videoOnly 只组合 [video], 其他各层都不组合, 用于画中画小窗.
+ * 切换它不会重建 [video]: 播放器节点被重建会销毁视频输出.
+ */
+@Composable
+fun VideoScaffold(
+    expanded: Boolean,
+    modifier: Modifier = Modifier,
+    layout: VideoScaffoldLayout = VideoScaffoldLayout.Overlay,
+    contentWindowInsets: WindowInsets = WindowInsets.safeContent, // TODO: 目前只对部分元素有效
+    maintainAspectRatio: Boolean = !expanded,
+    videoOnly: Boolean = false,
+    controllerState: PlayerControllerState,
+    gestureLocked: Boolean = false,
+    topBar: @Composable RowScope.() -> Unit = {},
+    /**
+     * @see VideoPlayer
+     */
+    video: @Composable BoxScope.() -> Unit = {},
+    danmakuHost: @Composable BoxScope.() -> Unit = {},
+    gestureHost: @Composable BoxWithConstraintsScope.() -> Unit = {},
+    floatingMessage: @Composable BoxScope.() -> Unit = {},
+    rhsButtons: @Composable ColumnScope.() -> Unit = {},
+    gestureLock: @Composable ColumnScope.() -> Unit = {},
+    bottomBar: @Composable RowScope.() -> Unit = {},
+    detachedProgressSlider: @Composable () -> Unit = {},
+    floatingBottomEnd: @Composable RowScope.() -> Unit = {},
+    rhsSheet: @Composable () -> Unit = {},
+    leftBottomTips: @Composable () -> Unit = {},
+    centerOverlay: @Composable BoxScope.() -> Unit = {},
+    framePreviewOverlay: @Composable BoxScope.() -> Unit = {},
+    playerStatsOverlay: @Composable BoxScope.() -> Unit = {},
+    screenshotOverlay: @Composable BoxScope.(bottomControllerHeight: Dp) -> Unit = {},
+) {
+    val inlineSliderOnly = controllerState.visibility == ControllerVisibility.InlineSliderOnly
+    var bottomControllerHeightPx by remember { mutableIntStateOf(0) }
+    val controllerVisibility = controllerState.visibility
+        .withGestureLocked(gestureLocked)
+        .withExpanded(expanded)
+    // 底部控制栏 (含独立进度条) 占用的高度, 由布局测得, 淡出完毕从布局移除后归零.
+    // 不含底部系统栏边距: 控制栏自己应用了边距, 避让它的元素也各自应用, 不重复计.
+    val bottomControllerHeight = with(LocalDensity.current) {
+        (bottomControllerHeightPx - contentWindowInsets.getBottom(this)).coerceAtLeast(0).toDp()
+    }
+
+    val enterTransition = LocalAniMotionScheme.current.animatedVisibility.standardEnter
+    val exitTransition = LocalAniMotionScheme.current.animatedVisibility.standardExit
+    PlayerKeyboardScope(controllerState, modifier) {
+        BoxWithConstraints(
+            if (expanded) Modifier.fillMaxHeight() else Modifier.fillMaxWidth(),
+            contentAlignment = Alignment.Center,
+        ) { // 16:9 box
+            val scaffoldHeight = maxHeight
+            Box(
+                Modifier
+                    .then(
+                        if (!maintainAspectRatio) {
+                            Modifier.fillMaxSize()
+                        } else {
+                            Modifier.fillMaxWidth().height(maxWidth * 9 / 16) // 16:9 box
+                        },
+                    ),
+            ) {
+                val verticalSplit = layout == VideoScaffoldLayout.VerticalSplit
+                val mediaPaneModifier = when (layout) {
+                    VideoScaffoldLayout.Overlay -> Modifier.matchParentSize()
+                    VideoScaffoldLayout.VerticalSplit -> Modifier
+                        .fillMaxWidth()
+                        .fillMaxHeight(0.5f)
+                        .align(Alignment.TopCenter)
+                }
+                val controllerPaneModifier = when (layout) {
+                    VideoScaffoldLayout.Overlay -> Modifier.matchParentSize()
+                    VideoScaffoldLayout.VerticalSplit -> Modifier
+                        .fillMaxWidth()
+                        .fillMaxHeight(0.5f)
+                        .align(Alignment.BottomCenter)
+                }
+
+                if (verticalSplit) {
+                    Box(
+                        controllerPaneModifier.background(Color.Black),
+                    )
+                }
+
+                Box(
+                    mediaPaneModifier.background(Color.Transparent), // no window insets for video
+                ) {
+                    video()
+                    Box(Modifier.matchParentSize()) // 防止点击事件传播到 video 里
+                }
+                if (videoOnly) return@Box
+
+                // 弹幕
+                Box(
+                    mediaPaneModifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp)
+                        .windowInsetsPadding(contentWindowInsets.only(WindowInsetsSides.Vertical)),
+                ) {
+                    CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onBackground) {
+                        danmakuHost()
+                    }
+                }
+
+                // 控制手势
+                // 分屏布局中手势层仍覆盖整个播放器, 使控制器隐藏时下半区也能响应交互.
+                BoxWithConstraints(Modifier.matchParentSize(), contentAlignment = Alignment.Center) {
+                    gestureHost()
+                }
+
+                Box(
+                    mediaPaneModifier
+                        .windowInsetsPadding(contentWindowInsets.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top))
+                        .padding(12.dp),
+                    contentAlignment = Alignment.TopStart,
+                ) {
+                    playerStatsOverlay()
+                }
+
+                Box(Modifier) {
+                    Column(Modifier.fillMaxSize().background(Color.Transparent)) {
+                        // 顶部控制栏: 返回键, 标题, 设置
+                        AniAnimatedVisibility(
+                            visible = controllerVisibility.topBar || inlineSliderOnly,
+                            enter = enterTransition,
+                            exit = exitTransition,
+                        ) {
+                            Box {
+                                Box(
+                                    Modifier
+                                        .matchParentSize()
+                                        .background(
+                                            Brush.verticalGradient(
+                                                0f to Color.Transparent.copy(0.72f),
+                                                0.32f to Color.Transparent.copy(0.45f),
+                                                1f to Color.Transparent,
+                                            ),
+                                        ),
+                                )
+                                val alwaysOnRequester = rememberAlwaysOnRequester(controllerState, "topBar")
+
+                                Column(
+                                    Modifier
+                                        .keepLayoutWhenHidden(inlineSliderOnly)
+                                        .hoverToRequestAlwaysOn(alwaysOnRequester)
+                                        .fillMaxWidth(),
+                                ) {
+                                    //force skip layout hit test for windows
+                                    val desktopTitleBarInsets = WindowInsets.desktopTitleBar.only(WindowInsetsSides.Top)
+                                    Spacer(
+                                        modifier = Modifier.fillMaxWidth()
+                                            .pointerInput(Unit) {}
+                                            .windowInsetsPadding(desktopTitleBarInsets),
+                                    )
+                                    Row(
+                                        Modifier.fillMaxWidth()
+                                            .consumeWindowInsets(desktopTitleBarInsets)
+                                            .windowInsetsPadding(contentWindowInsets.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top)),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onBackground) {
+                                            topBar()
+                                        }
+                                    }
+                                    Spacer(Modifier.height(16.dp))
+                                }
+
+                                Box(
+                                    Modifier.matchParentSize()
+                                        .keepLayoutWhenHidden(inlineSliderOnly)
+                                        .windowInsetsPadding(contentWindowInsets.only(WindowInsetsSides.Top))
+                                        .padding(top = 8.dp),
+                                    contentAlignment = Alignment.TopCenter,
+                                ) {
+                                    CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onBackground) {
+                                        centerOverlay()
+                                    }
+                                }
+                            }
+                        }
+
+                        Box(Modifier.weight(1f, fill = true).fillMaxWidth())
+
+                        Column(
+                            Modifier
+                                .then(
+                                    if (verticalSplit) {
+                                        Modifier.fillMaxWidth().height(scaffoldHeight / 2)
+                                    } else {
+                                        Modifier
+                                    },
+                                )
+                                .onSizeChanged { bottomControllerHeightPx = it.height },
+                            verticalArrangement = Arrangement.Bottom,
+                        ) {
+                            // 底部控制栏: 播放/暂停, 进度条, 切换全屏
+                            AniAnimatedVisibility(
+                                visible = controllerVisibility.bottomBar,
+                                modifier = if (verticalSplit) Modifier.fillMaxSize() else Modifier,
+                                enter = enterTransition,
+                                exit = exitTransition,
+                            ) {
+                                val alwaysOnRequester = rememberAlwaysOnRequester(controllerState, "bottomBar")
+                                Column(
+                                    Modifier
+                                        .then(
+                                            if (verticalSplit) {
+                                                Modifier
+                                            } else {
+                                                Modifier
+                                                    .hoverToRequestAlwaysOn(alwaysOnRequester)
+                                                    .pointerInput(Unit) {
+                                                        awaitEachGesture {
+                                                            val event = awaitPointerEvent()
+                                                            if (event.changes.all { it.pressed }) {
+                                                                //点击 bottom bar 里的按钮时 请求 always on
+                                                                alwaysOnRequester.request()
+                                                            }
+                                                            var releaseEvent = awaitPointerEvent()
+                                                            while (releaseEvent.changes.any { it.pressed }) {
+                                                                releaseEvent = awaitPointerEvent()
+                                                            }
+                                                            alwaysOnRequester.cancelRequest()
+                                                        }
+                                                    }
+                                            },
+                                        )
+                                        .then(if (verticalSplit) Modifier.fillMaxSize() else Modifier.fillMaxWidth())
+                                        .background(
+                                            Brush.verticalGradient(
+                                                0f to Color.Transparent,
+                                                1 - 0.32f to Color.Transparent.copy(0.45f),
+                                                1f to Color.Transparent.copy(0.72f),
+                                            ),
+                                        ),
+                                ) {
+                                    if (!verticalSplit) {
+                                        Spacer(Modifier.height(if (expanded) 12.dp else 6.dp))
+                                    }
+                                    Row(
+                                        Modifier.then(if (verticalSplit) Modifier.fillMaxSize() else Modifier.fillMaxWidth())
+                                            .windowInsetsPadding(contentWindowInsets.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        CompositionLocalProvider(LocalContentColor provides Color.White) {
+                                            bottomBar()
+                                        }
+                                    }
+                                }
+
+                            }
+                            AniAnimatedVisibility(
+                                visible = controllerVisibility.detachedSlider,
+                                enter = enterTransition,
+                                exit = exitTransition,
+                            ) {
+                                Row(
+                                    Modifier.padding(horizontal = 4.dp, vertical = 12.dp)
+                                        .windowInsetsPadding(contentWindowInsets.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)),
+                                ) {
+                                    detachedProgressSlider()
+                                }
+                            }
+                        }
+                    }
+                    AniAnimatedVisibility(
+                        controllerVisibility.floatingBottomEnd && !expanded,
+                        Modifier.align(Alignment.BottomEnd),
+                        enter = enterTransition,
+                        exit = exitTransition,
+                    ) {
+                        Row(
+                            Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                .windowInsetsPadding(contentWindowInsets.only(WindowInsetsSides.End)),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.End,
+                        ) {
+                            CompositionLocalProvider(LocalContentColor provides Color.White) {
+                                floatingBottomEnd()
+                            }
+                        }
+                    }
+                }
+                Column(
+                    controllerPaneModifier.background(Color.Transparent)
+                        .windowInsetsPadding(contentWindowInsets.only(WindowInsetsSides.End)),
+                ) {
+                    Box(Modifier.weight(1f, fill = true).fillMaxWidth()) {
+                        Column(
+                            Modifier
+                                .padding(end = 16.dp)
+                                .align(Alignment.CenterEnd),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            AniAnimatedVisibility(
+                                visible = controllerVisibility.rhsBar,
+                                enter = enterTransition,
+                                exit = exitTransition,
+                            ) {
+                                rhsButtons()
+                            }
+
+                            // Separate from controllers, to fix position when controllers are/aren't hidden
+                            AniAnimatedVisibility(
+                                visible = controllerVisibility.gestureLock,
+                                enter = enterTransition,
+                                exit = exitTransition,
+                            ) {
+                                gestureLock()
+                            }
+                        }
+                    }
+                }
+
+                // 左下提示: 贴着左下角, 抬到底部控制栏之上, 控制栏显隐时平滑跟随
+                Box(Modifier.matchParentSize()) {
+                    val lift by animateDpAsState(bottomControllerHeight, label = "leftBottomTipsLift")
+                    Box(
+                        Modifier.align(Alignment.BottomStart)
+                            .padding(bottom = lift)
+                            .windowInsetsPadding(contentWindowInsets.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))
+                            .padding(if (expanded) 16.dp else 8.dp),
+                    ) {
+                        leftBottomTips()
+                    }
+                }
+                // 截图反馈层: 盖在控制器之上, 面板避开底部控制栏
+                Box(Modifier.matchParentSize()) {
+                    screenshotOverlay(bottomControllerHeight)
+                }
+                // 悬浮消息, 例如正在缓冲
+                Box(
+                    mediaPaneModifier.windowInsetsPadding(contentWindowInsets),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    ProvideTextStyle(MaterialTheme.typography.labelSmall) {
+                        CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onBackground.slightlyWeaken()) {
+                            floatingMessage()
+                        }
+                    }
+                }
+                // FramePreview popup for compact layout
+                Box(
+                    mediaPaneModifier,
+                    contentAlignment = Alignment.Center,
+                ) {
+                    framePreviewOverlay()
+                }
+                // 右侧 sheet. 不在这里加边距: 侧边栏的背景要延伸到屏幕边缘, 只有内容避开系统栏和圆角,
+                // 所以把 insets 交给它自己处理, 见 [LocalVideoScaffoldSheetWindowInsets].
+                Box(Modifier.matchParentSize()) {
+                    CompositionLocalProvider(LocalVideoScaffoldSheetWindowInsets provides contentWindowInsets) {
+                        rhsSheet()
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Defines how media layers and the existing controller slots share the player bounds. */
+enum class VideoScaffoldLayout {
+    Overlay,
+    VerticalSplit,
+}
+
+internal fun Modifier.keepLayoutWhenHidden(hidden: Boolean): Modifier {
+    if (!hidden) return this
+    return alpha(0f)
+        .clearAndSetSemantics { }
+        .pointerInput(Unit) {
+            awaitPointerEventScope {
+                while (true) {
+                    awaitPointerEvent(PointerEventPass.Initial).changes.forEach { it.consume() }
+                }
+            }
+        }
+}
+
+
+@Stable
+private fun ControllerVisibility.withGestureLocked(gestureLocked: Boolean): ControllerVisibility {
+    return if (gestureLocked) {
+        copy(
+            topBar = false,
+            bottomBar = false,
+            detachedSlider = false,
+            rhsBar = false,
+        )
+    } else {
+        this
+    }
+}
+
+@Stable
+private fun ControllerVisibility.withExpanded(isExpanded: Boolean): ControllerVisibility {
+    return if (isExpanded) {
+        copy(floatingBottomEnd = false)
+    } else {
+        this
+    }
+}

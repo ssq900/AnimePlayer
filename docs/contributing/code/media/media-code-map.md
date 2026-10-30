@@ -1,0 +1,223 @@
+# Media 框架代码地图
+
+本文档是 [Media 框架](../media-framework.md)的代码级索引：把概念映射到具体的类、函数和调用链。
+适合在需要修改数据源、资源选择或播放相关代码时快速定位入口点。
+
+> [!NOTE]
+> 本文档由 AI 生成（2026-07，类名与调用链已对照代码核对）。代码演进后可能过时，发现不一致请以源码为准并更新本文。
+
+## 术语与核心类型
+
+请在代码和讨论中精确使用以下术语：
+
+- `MediaSource` = 资源提供商。它只负责根据 `MediaFetchRequest` 查询一个条目的全部 `Media`，
+  不按当前剧集裁剪。见 `datasource/api/src/commonMain/kotlin/source/MediaSource.kt`。
+- `Media` = 数据源返回的一个可播放/可缓存资源，携带 `download`、`episodeRange`、`properties`、
+  `kind` 等属性。见 `datasource/api/src/commonMain/kotlin/Media.kt`。
+- `MediaSourceFactory` = 数据源类型/模板。它根据 `MediaSourceConfig` 创建具体的 `MediaSource` 实例。
+- `MediaSourceInstance` = `MediaSource` + `MediaSourceConfig` + 启用状态。持久化为 `MediaSourceSave`。
+- `MediaSourceSubscription` = 远程数据源列表的订阅更新规则，不是可播放的数据源实例。
+
+## 核心组件与职责
+
+- `MediaDownloadManager`（`app/shared/app-data/.../domain/media/download/MediaDownloadManager.kt`）
+  聚合各存储的持久化视频下载，为每条记录维持稳定的 `MediaDownload` 实例（共享的进度快照与互斥的操作槽），
+  提供快照观察、剧集下载状态、默认存储选择、创建与删除入口。添加下载的选源会话 `DownloadRequestSession`
+  与批量操作 `DownloadOperations` 建立在它之上，详见 [下载管理](media-downloads.md)。
+- `MediaSourceManagerImpl`（`app/shared/app-data/.../domain/media/fetch/MediaSourceManager.kt`）
+  加载所有 factory，从 `MediaSourceInstanceRepository` 恢复持久化的实例，注入本地缓存数据源，
+  创建真正的 `MediaSourceInstance`。
+- `MediaSourceInstanceRepository` 存储本地数据源实例；`MediaSourceSubscriptionRepository` 存储订阅规则。
+- `MediaSourceCodecManager` 编解码导出的数据源定义。目前注册的 codec 有 `RssMediaSourceCodec`、
+  `SelectorMediaSourceCodec` 和 `JsonApiMediaSourceCodec`。
+- `MediaSourceSubscriptionUpdater` 下载订阅内容，按 `subscriptionId` 与现有实例 diff，
+  然后增/改/删/重排数据源实例。
+- `MediaSourceSubscriptionRequesterImpl` 先直接拉取订阅 JSON，失败后回退到
+  `SubscriptionsAniApi.proxy(...)`。
+- 播放流程埋点（`app/shared/app-data/.../domain/player/analytics/`）：`PlayFlowRecorder` 持有一次播放会话的
+  `play_session_id`，`PlayFlowFetchObserver` 记录条目级查询会话每轮的逐源结果，`EpisodeFlowExtension` /
+  `PlaybackFlowExtension` 记录剧集信息、用户选择与起播。详见 [播放加载流程埋点](../analytics-play-flow.md)。
+
+## 重要的通用数据源实现
+
+- `SelectorMediaSource`（`app/shared/app-data/.../domain/mediasource/web/SelectorMediaSource.kt`）：
+  通用 HTML/CSS-selector 网页数据源。
+- `JsonApiMediaSource`（`app/shared/app-data/.../domain/mediasource/jsonapi/JsonApiMediaSource.kt`）：
+  通用 JSON 接口数据源，`JsonApiMediaSourceEngine` 负责按模板构造请求与 JSONPath 解析。
+- `RssMediaSource`（`app/shared/app-data/.../domain/mediasource/rss/RssMediaSource.kt`）：
+  通用 RSS BitTorrent 数据源。
+- 本地缓存以数据源形式暴露：`MediaCacheStorageSource`
+  （`app/shared/app-data/.../domain/media/cache/storage/MediaCacheStorage.kt`）。
+
+### Selector 数据源查询/解析管线
+
+1. `SelectorMediaSource.fetch(...)`
+2. `DefaultSelectorMediaSourceEngine.search(...)`
+3. `searchSubjects(...)`
+4. `selectSubjects(...)`
+5. `doHttpGet(...)` 请求条目页面
+6. `selectEpisodes(...)`
+7. `selectMedia(...)`
+
+注意：
+
+- `selectMedia(...)` 产出的 `DefaultMedia` 带有 `download = ResourceLocation.WebVideo(...)`。
+- `SelectorMediaSource` 实现了 `MediaSource` 的浏览方法（`searchSubjects` / `browseSubject` / `createMedia`，
+  类型见 `datasource/api/.../source/Browse.kt`）：只列出站点内容，不做匹配；`fetch` 是其上的自动模式，
+  由 `searchConfig.autoMatch` 控制，见 [MediaSource](media-source.md#selectormediasource)。
+  浏览方法的调用方是手动查找（`ManualBrowseState`）与浏览记忆回放（`ReplayBrowseMemoryUseCase`），
+  见下文[选源界面](#选源界面)。
+- `SelectorMediaSource.matcher` 提供数据源专属的 `WebVideoMatcher`，供之后播放时提取 URL 使用。
+
+### JSON API 数据源查询/解析管线
+
+1. `JsonApiMediaSource.fetch(...)`：关键字链（`keywordSearchChain`，与 Selector 源共用）
+2. `searchSubjectsOnline(...)`：搜索阶段请求，`JsonApiMediaSourceEngine.parseSubjects(...)`
+3. 按条目名过滤后对每个条目 `loadChannels(...)`：剧集阶段请求，`parseChannels(...)` 按线路格式展开
+4. `selectMedia(...)` 按集号筛选，`createMedia(...)` 产出 `download = ResourceLocation.WebVideo(..., apiParameters)`
+5. 播放时 `JsonApiMediaSource.resolveApiVideo(...)`：播放阶段请求，`parseVideo(...)` 按线路挑候选；剧集列表自带地址的站点改为重取列表读这一集的地址
+
+浏览方法（`searchSubjects` / `browseSubject` / `createMedia`）走同样的请求与解析，不做匹配。
+
+### RSS 数据源查询/解析管线
+
+1. `RssMediaSource.fetch(...)`
+2. `startSearch(...)`
+3. `DefaultRssMediaSourceEngine.search(...)`
+4. 拉取 XML 并用 `RssParser` 解析
+5. `convertItemToMedia(...)`
+
+## 单个剧集的播放时序
+
+1. `EpisodeSession.fetchSelectFlow` 由 `CreateMediaFetchSelectBundleFlowUseCaseImpl` 创建。
+2. 它根据条目信息、条目的全部剧集和当前剧集构建 `MediaFetchRequest`。
+3. 播放页的 `EpisodeFetchSelectPlayState` 持有条目级的 `SubjectMediaFetchSessions`：
+   条目级请求相同（`isSameSubjectQuery`）时切集复用同一个 `MediaFetchSession`，只重建选择器，
+   并对失败或被中途取消的数据源重试一次；否则通过 `MediaSourceManager.createFetchFetchSession(...)`
+   创建新会话。会话由播放页作用域持续订阅，不随剧集作用域取消。
+4. `MediaSourceMediaFetcher` 并发调用每个启用实例的 `instance.source.fetch(...)`，
+   合并进 `cumulativeResults`。
+5. `DefaultMediaSelector` 对查询到的 `Media` 过滤（先按当前剧集）、排序、选择。
+6. `AutoSelectExtension` 在同一协程里先做本地缓存检查与浏览记忆回放：等本会话的本地缓存源完成，
+   本集已有可用缓存则跳过回放；否则调用 `ReplayBrowseMemoryUseCase`，按 `ManualBrowseMemoryRepository`
+   里该条目的记忆 `browseSubject` 记住的条目、在记住的线路里按位置找目标集，`createMedia` 后 `select`，
+   并更新记忆。命中则不进入第 7 步。回放结果 `ReplayResult` 是 `Selected` 或带原因的 `NotFound`。
+7. `MediaSelectorAutoSelectUseCaseImpl` 准备配置并启用上次使用的源，调用
+   `MediaAutoSelector.select`；后者统一处理缓存、记忆源、WEB 两段超时或 BT 完成条件，并返回结构化结果
+   `MediaAutoSelectOutcome`。
+8. `EpisodeFetchSelectPlayState.LoadMediaOnSelectExtension` 监听 `mediaSelector.selected`，先调用各扩展的
+   `onBeforeLoadMedia`（换源时 `RememberPlayProgressExtension` 在这里保存旧资源的进度），再读出本集记忆的播放进度
+   作为起播位置（一起看时从头），调用 `PlayerSession.loadMedia(...)`。
+9. `PlayerSession.loadMedia(...)` 通过 `MediaResolver.resolve(...)` 解析，打开得到的
+   `MediaDataProvider`，然后调用 `player.setMediaData(...)`，播放器直接在起播位置打开；各阶段与结果通过 `MediaLoadListener` 回调。
+
+每次选择都带 `SelectTrigger`（`SelectEvent.trigger`），区分自动匹配页、BT 页、手动查找、拖入文件、TV 与启动时 / 失败换源的自动选择。
+整个流程的埋点见 [播放加载流程埋点](../analytics-play-flow.md)。
+
+### 播放拖入的本地文件（桌面端）
+
+在播放页将本地视频文件拖入窗口，可以不经过数据源选择，直接在当前剧集播放该文件：
+
+1. `EpisodeVideoDropHandler`（`app/shared/src/commonMain/.../ui/subject/episode/`）是播放页的
+   `WindowDropHandler`，由 `EpisodeScreenContent` 通过 `WindowDropHandlerEffect` 注册到主窗口的
+   `WindowDropHost`，只在播放页处于组合中时生效。
+2. 松手后 `EpisodeViewModel.playDroppedFile` 用 `DroppedFileMedia.create(...)` 构造一个
+   `download = ResourceLocation.LocalFile` 的 `Media`，并调用 `MediaSelector.selectTemporarily(...)`。
+3. 之后与上面的第 8、9 步相同：`LoadMediaOnSelectExtension` 监听到 `selected` 变化，
+   由 `LocalFileMediaResolver` 解析并播放。
+
+注意：
+
+- 这个 `Media` 不来自任何数据源，不在候选列表中；`mediaSourceId` 固定为
+  `DroppedFileMedia.MEDIA_SOURCE_ID`，可用 `DroppedFileMedia.isDroppedFile(...)` 判断。
+- `selectTemporarily` 不更新偏好，也不广播 `onChangePreference` / `onPreferWebSource`，因此只对当前
+  `EpisodeSession` 有效；切换剧集会创建新的 `MediaSelector`，照常自动选择。
+  关掉「记住选择」时的手动查找点选走这个方法。
+- 已有选择时 `MediaAutoSelector` 不会覆盖它；用户仍可在数据源选择器中换回其他资源。
+- 拖入的文件播放失败时保留报错：`PlayerLoadErrorHandler.handleError` 不会为它自动换源，也不会拉黑它。
+- 跳过 OP/ED 的上报（`EpisodeViewModel.onClickSkipOpEd`）会忽略拖入的文件。
+
+## 过滤与选择
+
+- 过滤/排序主实现：`MediaSelectorFilterSortAlgorithm`。算法细节见
+  [MediaSelector](media-selector.md)。
+- 拆分季的页面规则：`domain/media/selector/filter/SplitSeasonPageMatcher.kt`（页名分类与按页面编号对集，
+  自动选择与手动查找的预选共用）；`SplitSeasonEpisodeMatcher.kt` 是它在过滤规则里的适配，从候选列表统计各页面的集号。
+- 选择器主实现：`DefaultMediaSelector`。
+- 阶级（tier）：`MediaSelectorSourceTiers`
+  （`app/shared/app-data/.../domain/media/selector/MediaSelectorContext.kt`）
+  持有数据源级 `tiers` 与 channel 级 `channelTiers`，由
+  `MediaSourceManagerImpl.mediaSourceTiersFlow()` 从各实例的
+  `MediaSourceArguments.tier` / `channelTiers` 汇总。排序按
+  `(mediaSourceId, alliance)` 查有效阶级；快速选择
+  `MediaAutoSelector` 按资源的有效 tier 限制即时选择，并在后续阶段先按精确匹配、
+  再按 tier 排序；只在最优组内应用偏好。
+- 查询结果并不天然“正确”；数据源实现应尽量返回准确的 `episodeRange`，`MediaSelector`
+  只是在其上做额外的过滤和排序。数据源返回整个条目的资源，`MediaSelector` 的第 0 条规则
+  按当前剧集筛选；不筛选剧集的条目级候选通过 `MediaSelector.subjectCandidates` 提供给批量下载。
+
+## 选源界面
+
+模式划分、容器规则与浏览记忆的取舍见[选源界面](media-selector-ui.md)。
+
+- 宿主：
+    - `app/shared/src/commonMain/kotlin/ui/subject/episode/details/EpisodeDetails.kt`：详情页
+      （宽窗口侧边栏；窄窗口底部弹窗）。
+    - `app/shared/src/commonMain/kotlin/ui/subject/episode/video/sidesheet/EpisodeVideoMediaSelectorSideSheet.kt`：
+      播放器侧边栏（三种模式）；侧边栏太矮时手动查找与 BT 的容器在 `EpisodePage.kt` 的 `sideSheets` 槽内。
+    - `app/shared/ui-download/src/commonMain/kotlin/ui/download/subject/SubjectDownloadRequestDialogs.kt`：
+      批量下载的选源弹窗（三种模式）；手动查找状态由 `SubjectDownloadsPresenter` 为每次选源创建。
+    - `EpisodeViewModel`：模式、全屏容器可见性、BT 页筛选状态与手动查找状态的持有者；手动查找点选在此写记忆，
+      用户在自动匹配或 BT 页换源、关掉「记住选择」时在此删除记忆。
+- 状态（`app/shared/ui-mediaselect/src/commonMain/kotlin/ui/`）：
+    - `mediafetch/MediaSelectorState.kt`：包装 `MediaSelector`，产出自动匹配页与 BT 页的列表投影、
+      四维偏好 chip 状态与临时选择；`MediaSelectorStateListener` 向宿主报告点选与验证码处理结果。
+    - `mediafetch/MediaSourceResultPresentation.kt`：数据源查询状态的展示模型（自动匹配页的源行、BT 页的数据源面板）。
+    - `mediaselect/manual/ManualBrowseState.kt`：手动查找的搜索、浏览、选择与播放，含验证码交互；
+      `ManualBrowseListener` 向宿主报告每一步的结果。
+    - `mediaselect/bt/BtListPresentation.kt`：BT 页的会话内筛选状态与列表投影纯函数。
+- 页面与公共件（同目录）：
+    - `mediaselect/MediaSelectorMode.kt`：模式枚举、「正在观看」模型、版式阈值与侧边栏换容器的判定。
+    - `mediaselect/common/MediaSelectorChrome.kt`：模式下拉 chip、「正在观看」卡片与手动查找 / BT 共用的搜索框；
+      `mediaselect/common/MediaSelectorDialog.kt`：手动查找 / BT 的容器布局、对话框包装与容器内容（播放器与详情页共用）。
+    - `mediaselect/auto/AutoMatchPage.kt`、`mediaselect/selector/MediaSelectorWebColumn.kt`：自动匹配页（源行与救援按钮）。
+    - `mediaselect/manual/ManualBrowsePage.kt`、`ManualBrowseComponents.kt`：手动查找的双栏 / 堆叠两页。
+    - `mediaselect/bt/BtResourcesPage.kt`、`BtListViews.kt`、`BtPanels.kt`：BT 页、表格与紧凑列表、数据源与筛选面板；
+      `mediafetch/MediaSelectorFilters.kt`：表格模式的偏好下拉 chip。
+    - `mediaselect/summary/*`：播放页的选源状态横幅，不在选择器内。
+- 浏览记忆（`app/shared/app-data/src/commonMain/kotlin/`）：
+    - `data/repository/media/ManualBrowseMemoryRepository.kt`：按条目的记忆模型与仓库（typed DataStore，
+      文件由 `data/persistent/SettingsStore.kt` 提供）。
+    - `domain/media/selector/ReplayBrowseMemoryUseCase.kt`：切集回放；由 `domain/player/extension/AutoSelectExtension.kt`
+      在自动选择前调用。
+    - `domain/media/selector/BrowseEpisodeIndex.kt`：线路里按位置换算剧集下标（回放与下载弹窗共用），
+      以及手动查找打开线路时的默认预选。
+
+## Android 内封文本字幕
+
+`LibassExoPlayerMediampPlayer`（`app/shared/video-player/src/androidMain/.../media/`）
+通过 media source interceptor 安装 libass 字幕解析器及 `CompressedSubtitleMatroskaExtractor`。
+后者按 Matroska 轨道的 `ContentCompression` / `ContentCompAlgo` 识别 zlib 压缩的 ASS/SSA 和 SRT，
+在 BlockGroup 提交、文本 NUL 截断及字幕解析前解压完整的对白数据。
+解压失败、需要字典或单条对白超过 16 MiB 时报告媒体解析错误。
+回归夹具与生成脚本位于 `video-player/src/androidDeviceTest/`，设备测试覆盖原生 libass 事件、Media3 SRT cues 的文本及时间，以及播放轨道切换。
+
+## 播放时使用的 Resolver
+
+- `TorrentMediaResolver`：解析磁力/种子资源，并在种子内选择具体视频文件。
+- `HttpStreamingMediaResolver`：解析直接 HTTP 流媒体文件。
+- `ApiVideoMediaResolver`：解析 `WebVideo.isResolvedByApi` 的资源，向产生它的数据源
+  （`ApiVideoResolver`，目前是 `JsonApiMediaSource`）当场签发播放地址，不打开页面。
+- 平台 web resolver：
+    - Android：`AndroidWebMediaResolver`
+    - Desktop：`DesktopWebMediaResolver`
+    - Apple/iOS：`IosWebMediaResolver`
+
+### Web 播放的重要细节
+
+- `ResourceLocation.WebVideo` 不能直接播放。`apiParameters` 为 `null` 时由平台 web resolver 打开页面拦截；
+  非 `null` 时由 `ApiVideoMediaResolver` 向数据源签发。
+- 平台 web resolver 通过 `MediaSourceManager.webVideoMatcherLoader` 加载数据源提供的
+  `WebVideoMatcher`。
+- 对于 Selector 数据源，matcher 来自 `SelectorMediaSource.matcher`，它使用配置的正则/Cookie
+  提取最终的流 URL 和请求头。

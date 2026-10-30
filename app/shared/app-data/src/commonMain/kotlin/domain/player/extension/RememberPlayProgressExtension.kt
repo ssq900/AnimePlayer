@@ -1,0 +1,192 @@
+/*
+ * Copyright (C) 2024-2026 OpenAni and contributors.
+ *
+ * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
+ * Use of this source code is governed by the GNU AGPLv3 license, which can be found at the following link.
+ *
+ * https://github.com/open-ani/ani/blob/main/LICENSE
+ */
+
+package me.him188.ani.app.domain.player.extension
+
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import me.him188.ani.app.data.models.episode.displayName
+import me.him188.ani.app.data.models.player.EpisodeHistory
+import me.him188.ani.app.data.repository.player.EpisodePlayHistoryRepository
+import me.him188.ani.app.domain.episode.EpisodeFetchSelectPlayState
+import me.him188.ani.app.domain.episode.EpisodeSession
+import me.him188.ani.app.domain.episode.SubjectEpisodeInfoBundle
+import me.him188.ani.app.domain.episode.UnsafeEpisodeSessionApi
+import org.koin.core.Koin
+import org.openani.mediamp.MediaStatus
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
+
+/**
+ * 记忆播放进度.
+ *
+ * 在以下情况时保存播放进度:
+ * - 开始或恢复播放 5 秒后
+ * - 播放中每分钟
+ * - 加载新选择的资源前 (换源)
+ * - 暂停
+ * - 播放完成
+ * - 切换剧集, 关闭播放页
+ *
+ * 播放完成时位置照常保存 (钳到时长以内), 记录不会被删除; 恢复时由 [EpisodeHistory.isFinished] 判断是否从头播放.
+ *
+ * 这个扩展只保存, 不跳转. 续播由 [EpisodeFetchSelectPlayState] 完成: 加载资源时读出记忆的进度 (一起看时不续播),
+ * 播放器直接在那里打开. 因此播放器自行在原位置重新打开同一个资源时 (Android 上视频输出超时后恢复播放),
+ * 不会被拉回记忆的进度.
+ */
+class RememberPlayProgressExtension(
+    private val context: PlayerExtensionContext,
+    koin: Koin,
+    private val periodicReportInterval: Duration = 1.minutes,
+    private val initialReportDelay: Duration = 5.seconds,
+) : PlayerExtension(name = "SaveProgressExtension") {
+    private val playProgressRepository: EpisodePlayHistoryRepository by koin.inject()
+    private val latestInfoBundleMutex = Mutex()
+    private val latestInfoBundles = mutableMapOf<Int, SubjectEpisodeInfoBundle>()
+
+    override fun onStart(episodeSession: EpisodeSession, backgroundTaskScope: ExtensionBackgroundTaskScope) {
+        val mediaLoaded = CompletableDeferred<Unit>()
+        backgroundTaskScope.launch("MediaLoadedListener") {
+            context.subscribeEvents<EpisodeFetchSelectPlayState.MediaLoadedEvent>().collectLatest { event ->
+                if (event.episodeId == episodeSession.episodeId && mediaLoaded.isActive) {
+                    mediaLoaded.complete(Unit)
+                }
+            }
+        }
+
+        backgroundTaskScope.launch("InfoBundleCache") {
+            episodeSession.infoBundleFlow.filterNotNull().collect { info ->
+                latestInfoBundleMutex.withLock {
+                    latestInfoBundles[info.episodeId] = info
+                }
+            }
+        }
+
+        backgroundTaskScope.launch("PlaybackStateListener") {
+            context.player.state.collectLatest { state ->
+                when {
+                    state.isPlaying -> {
+                        // 持续播放 5 秒后才保存, 之后每 [periodicReportInterval] 保存一次
+                        delay(initialReportDelay)
+                        savePlayProgressOrRemove(episodeSession, allowZeroPosition = true)
+
+                        if (periodicReportInterval != Duration.INFINITE) {
+                            while (true) {
+                                delay(periodicReportInterval)
+                                savePlayProgressOrRemove(episodeSession, allowZeroPosition = true)
+                            }
+                        }
+                    }
+
+                    state.mediaStatus == MediaStatus.Ready && !state.playWhenReady -> { // 暂停
+                        mediaLoaded.await() // 播放器开始播放了一次之后再保存状态
+                        savePlayProgressOrRemove(episodeSession)
+                    }
+
+                    state.mediaStatus == MediaStatus.Ended -> { // 播放完成
+                        mediaLoaded.await() // 播放器开始播放了一次之后再保存状态
+                        savePlayProgressOrRemove(episodeSession)
+                    }
+
+                    else -> Unit
+                }
+            }
+
+        }
+    }
+
+    /**
+     * 换源: 播放器还是旧资源的状态, 保存它的进度. 新资源随后从这个进度开始播放.
+     */
+    override suspend fun onBeforeLoadMedia(episodeSession: EpisodeSession) {
+        savePlayProgressOrRemove(episodeSession)
+    }
+
+    @OptIn(UnsafeEpisodeSessionApi::class)
+    override suspend fun onBeforeSwitchEpisode(newEpisodeId: Int) {
+        savePlayProgressOrRemove(context.getCurrentEpisodeId())
+    }
+
+    @OptIn(UnsafeEpisodeSessionApi::class)
+    override suspend fun onClose() {
+        savePlayProgressOrRemove(context.getCurrentEpisodeId())
+    }
+
+    private suspend fun savePlayProgressOrRemove(
+        episodeSession: EpisodeSession,
+        allowZeroPosition: Boolean = false,
+    ) {
+        savePlayProgressOrRemove(episodeSession.episodeId, episodeSession, allowZeroPosition)
+    }
+
+    private suspend fun savePlayProgressOrRemove(
+        episodeId: Int
+    ) {
+        savePlayProgressOrRemove(episodeId, null)
+    }
+
+    private suspend fun savePlayProgressOrRemove(
+        episodeId: Int,
+        episodeSession: EpisodeSession?,
+        allowZeroPosition: Boolean = false,
+    ) {
+        val player = context.player
+        val mediaStatus = player.state.value.mediaStatus
+        val videoDurationMillis = player.mediaProperties.value?.durationMillis
+
+        if (videoDurationMillis == null || videoDurationMillis <= 0L) {
+            return
+        }
+
+        // 只在媒体已加载 (Ready/Ended) 时保存
+        if (mediaStatus != MediaStatus.Ready && mediaStatus != MediaStatus.Ended) {
+            return
+        }
+
+        val currentPositionMillis = player.currentPositionMillis.value
+
+        if (currentPositionMillis < 0L || (currentPositionMillis == 0L && !allowZeroPosition)) {
+            return
+        }
+
+        // 有些后端上报的位置会略微超过时长 (#1506), 钳到时长以内, 保证进度比例不超过 1 且能被识别为已看完.
+        val info = latestInfoBundle(episodeId, episodeSession)
+        playProgressRepository.saveOrUpdate(
+            episodeId = episodeId,
+            positionMillis = currentPositionMillis.coerceAtMost(videoDurationMillis),
+            subjectId = info?.subjectId,
+            episodeSort = info?.episodeInfo?.sort?.number,
+            subjectName = info?.subjectInfo?.displayName,
+            subjectImageUrl = info?.subjectInfo?.imageLarge,
+            episodeName = info?.episodeInfo?.displayName,
+            durationMillis = videoDurationMillis,
+        )
+    }
+
+    private suspend fun latestInfoBundle(
+        episodeId: Int,
+        episodeSession: EpisodeSession?,
+    ): SubjectEpisodeInfoBundle? {
+        episodeSession?.infoBundleFlow?.replayCache?.lastOrNull()?.let { return it }
+
+        return latestInfoBundleMutex.withLock {
+            latestInfoBundles[episodeId]
+        }
+    }
+
+    companion object : EpisodePlayerExtensionFactory<RememberPlayProgressExtension> {
+        override fun create(context: PlayerExtensionContext, koin: Koin): RememberPlayProgressExtension =
+            RememberPlayProgressExtension(context, koin)
+    }
+}

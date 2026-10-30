@@ -1,0 +1,326 @@
+/*
+ * Copyright (C) 2024-2026 OpenAni and contributors.
+ *
+ * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
+ * Use of this source code is governed by the GNU AGPLv3 license, which can be found at the following link.
+ *
+ * https://github.com/open-ani/ani/blob/main/LICENSE
+ */
+
+package me.him188.ani.app.data.repository.player
+
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.runTest
+import me.him188.ani.app.data.models.player.EpisodeHistory
+import me.him188.ani.app.data.persistent.MemoryDataStore
+import me.him188.ani.app.data.persistent.database.dao.createMemoryPlaybackHistoryDao
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+
+class EpisodePlayHistoryRepositoryTest {
+    private var now = 100L
+
+    private fun createRepository(
+        initialHistories: EpisodeHistories = EpisodeHistories.Empty,
+    ): EpisodePlayHistoryRepository {
+        return EpisodePlayHistoryRepositoryImpl(
+            dataStore = MemoryDataStore(initialHistories),
+            playbackHistoryDao = createMemoryPlaybackHistoryDao(),
+            nowMillis = { now },
+        )
+    }
+
+    @Test
+    fun `save stores metadata and enqueues pending upsert op`() = runTest {
+        val repository = createRepository()
+
+        repository.saveOrUpdate(
+            episodeId = 1,
+            positionMillis = 20_000,
+            subjectId = 10,
+            episodeSort = 2f,
+            subjectName = "Subject",
+            subjectImageUrl = "https://example.com/cover.jpg",
+            episodeName = "Episode",
+            durationMillis = 100_000,
+        )
+
+        assertEquals(
+            EpisodeHistory(
+                episodeId = 1,
+                positionMillis = 20_000,
+                subjectId = 10,
+                episodeSort = 2f,
+                subjectName = "Subject",
+                subjectImageUrl = "https://example.com/cover.jpg",
+                episodeName = "Episode",
+                durationMillis = 100_000,
+                updatedAtMillis = 100,
+                isDirty = false,
+            ),
+            repository.flow.first().single(),
+        )
+        assertFalse(repository.allHistoriesFlow.first().single().isDirty)
+
+        val pendingOp = repository.pendingOpsFlow.first().single()
+        assertTrue(pendingOp is PlaybackHistoryPendingOp.Upsert)
+        assertEquals(1, pendingOp.episodeId)
+        assertEquals(10, pendingOp.subjectId)
+        assertEquals(20_000, pendingOp.positionMillis)
+        assertEquals(100_000, pendingOp.durationMillis)
+    }
+
+    @Test
+    fun `flowByEpisodeIds returns only requested active records`() = runTest {
+        val repository = createRepository()
+        repository.saveOrUpdate(episodeId = 1, positionMillis = 10, durationMillis = 100)
+        repository.saveOrUpdate(episodeId = 2, positionMillis = 20, durationMillis = 100)
+        repository.saveOrUpdate(episodeId = 3, positionMillis = 30, durationMillis = 100)
+        repository.remove(2)
+
+        assertEquals(listOf(1), repository.flowByEpisodeIds(listOf(1, 2)).first().map { it.episodeId })
+        assertEquals(listOf(3), repository.flowByEpisodeIds(listOf(3, 99)).first().map { it.episodeId })
+        assertEquals(emptyList(), repository.flowByEpisodeIds(emptyList()).first())
+    }
+
+    @Test
+    fun `allHistoriesFlowByEpisodeIds includes deleted records`() = runTest {
+        val repository = createRepository()
+        repository.saveOrUpdate(episodeId = 1, positionMillis = 10, durationMillis = 100, subjectName = "A")
+        repository.saveOrUpdate(episodeId = 2, positionMillis = 20, durationMillis = 100, subjectName = "B")
+        repository.remove(2)
+
+        val histories = repository.allHistoriesFlowByEpisodeIds(listOf(1, 2, 99)).first().associateBy { it.episodeId }
+        assertEquals(setOf(1, 2), histories.keys)
+        assertEquals("B", histories.getValue(2).subjectName)
+        assertTrue(histories.getValue(2).isDeleted)
+        assertEquals(emptyList(), repository.allHistoriesFlowByEpisodeIds(emptyList()).first())
+    }
+
+    @Test
+    fun `successive saves keep only the latest pending op for each episode`() = runTest {
+        val repository = createRepository()
+
+        repository.saveOrUpdate(
+            episodeId = 1,
+            positionMillis = 20_000,
+            subjectId = 10,
+            durationMillis = 100_000,
+        )
+        now = 200
+        repository.saveOrUpdate(
+            episodeId = 1,
+            positionMillis = 40_000,
+            subjectId = 10,
+            durationMillis = 100_000,
+        )
+        repository.saveOrUpdate(
+            episodeId = 2,
+            positionMillis = 30_000,
+            subjectId = 20,
+            durationMillis = 100_000,
+        )
+
+        val pendingOps = repository.pendingOpsFlow.first()
+        assertEquals(2, pendingOps.size)
+        assertEquals(
+            mapOf(1 to 40_000L, 2 to 30_000L),
+            pendingOps.associate { op ->
+                val upsert = op as PlaybackHistoryPendingOp.Upsert
+                upsert.episodeId to upsert.positionMillis
+            },
+        )
+    }
+
+    @Test
+    fun `legacy migration stores records and enqueues pending upsert ops`() = runTest {
+        val repository = createRepository(
+            EpisodeHistories(
+                histories = listOf(
+                    EpisodeHistory(
+                        episodeId = 1,
+                        positionMillis = 20_000,
+                        subjectId = 10,
+                        episodeSort = 2f,
+                        subjectName = "Subject",
+                        subjectImageUrl = "https://example.com/cover.jpg",
+                        episodeName = "Episode",
+                        durationMillis = 100_000,
+                        updatedAtMillis = 50,
+                        isDirty = true,
+                    ),
+                ),
+            ),
+        )
+
+        assertEquals(20_000, repository.getResumePositionMillisByEpisodeId(1))
+
+        val history = repository.flow.first().single()
+        assertEquals(1, history.episodeId)
+        assertEquals("Subject", history.subjectName)
+        assertFalse(history.isDirty)
+
+        val pendingOp = repository.pendingOpsFlow.first().single()
+        assertTrue(pendingOp is PlaybackHistoryPendingOp.Upsert)
+        assertEquals(1, pendingOp.episodeId)
+        assertEquals(10, pendingOp.subjectId)
+        assertEquals(20_000, pendingOp.positionMillis)
+        assertEquals(100_000, pendingOp.durationMillis)
+        assertEquals(50, pendingOp.updatedAtMillis)
+    }
+
+    @Test
+    fun `finished record is kept but not resumed`() = runTest {
+        val repository = createRepository()
+        repository.saveOrUpdate(
+            episodeId = 1,
+            positionMillis = 100_000 - EpisodeHistory.FINISHED_THRESHOLD_MILLIS + 1,
+            subjectId = 10,
+            durationMillis = 100_000,
+        )
+
+        val history = repository.flow.first().single()
+        assertTrue(history.isFinished)
+        assertEquals(100_000 - EpisodeHistory.FINISHED_THRESHOLD_MILLIS + 1, history.positionMillis)
+        assertNull(repository.getResumePositionMillisByEpisodeId(1))
+        assertTrue(repository.pendingOpsFlow.first().single() is PlaybackHistoryPendingOp.Upsert)
+
+        // 未看完则照常恢复
+        repository.saveOrUpdate(episodeId = 1, positionMillis = 100_000 - EpisodeHistory.FINISHED_THRESHOLD_MILLIS)
+        assertEquals(100_000 - EpisodeHistory.FINISHED_THRESHOLD_MILLIS, repository.getResumePositionMillisByEpisodeId(1))
+    }
+
+    @Test
+    fun `remove creates tombstone and enqueues pending delete op`() = runTest {
+        val repository = createRepository()
+        repository.saveOrUpdate(
+            episodeId = 1,
+            positionMillis = 20_000,
+            subjectId = 10,
+            durationMillis = 100_000,
+        )
+
+        now = 200
+        repository.removeAll(listOf(1))
+
+        assertEquals(emptyList(), repository.flow.first())
+        val tombstone = repository.allHistoriesFlow.first().single()
+        assertEquals(1, tombstone.episodeId)
+        assertEquals(200, tombstone.deletedAtMillis)
+        assertFalse(tombstone.isDirty)
+        assertNull(repository.getResumePositionMillisByEpisodeId(1))
+
+        val pendingOps = repository.pendingOpsFlow.first()
+        assertEquals(1, pendingOps.size)
+        assertTrue(pendingOps.single() is PlaybackHistoryPendingOp.Delete)
+        assertEquals(1, pendingOps.single().episodeId)
+    }
+
+    @Test
+    fun `sync result removes sent pending ops and overwrites local record`() = runTest {
+        val repository = createRepository()
+        repository.saveOrUpdate(
+            episodeId = 1,
+            positionMillis = 20_000,
+            subjectId = 10,
+            durationMillis = 100_000,
+        )
+        val sentOpIds = repository.pendingOpsFlow.first().map { it.id }
+
+        repository.applySyncResult(
+            sentPendingOpIds = sentOpIds,
+            records = listOf(
+                EpisodeHistory(
+                    episodeId = 1,
+                    positionMillis = 40_000,
+                    subjectId = 10,
+                    subjectName = "Remote",
+                    updatedAtMillis = 300,
+                    isDirty = false,
+                ),
+            ),
+            nextSyncAtMillis = 500,
+        )
+
+        val history = repository.flow.first().single()
+        assertEquals(40_000, history.positionMillis)
+        assertEquals("Remote", history.subjectName)
+        assertFalse(history.isDirty)
+        assertEquals(500, repository.lastSyncAtMillisFlow.first())
+        assertEquals(emptyList(), repository.pendingOpsFlow.first())
+    }
+
+    @Test
+    fun `sync result does not overwrite records with remaining pending ops`() = runTest {
+        val repository = createRepository()
+        repository.saveOrUpdate(
+            episodeId = 1,
+            positionMillis = 20_000,
+            subjectId = 10,
+            durationMillis = 100_000,
+        )
+        now = 400
+        repository.remove(1)
+
+        repository.applySyncResult(
+            sentPendingOpIds = emptyList(),
+            records = listOf(
+                EpisodeHistory(
+                    episodeId = 1,
+                    positionMillis = 30_000,
+                    updatedAtMillis = 300,
+                    isDirty = false,
+                ),
+            ),
+            nextSyncAtMillis = 600,
+        )
+
+        assertEquals(emptyList(), repository.flow.first())
+        val history = repository.allHistoriesFlow.first().single()
+        assertEquals(400, history.deletedAtMillis)
+        assertTrue(history.isDeleted)
+    }
+
+    @Test
+    fun `local record stats include deleted and not yet migrated legacy records`() = runTest {
+        val repository = createRepository(
+            EpisodeHistories(
+                histories = listOf(
+                    EpisodeHistory(episodeId = 1, positionMillis = 20_000, updatedAtMillis = 50),
+                    EpisodeHistory(episodeId = 2, positionMillis = 30_000, updatedAtMillis = 40, deletedAtMillis = 60),
+                ),
+            ),
+        )
+
+        assertEquals(2, repository.countAllRecords())
+        assertEquals(40, repository.getEarliestRecordTimeMillis())
+    }
+
+    @Test
+    fun `delete pending ops removes selected ops`() = runTest {
+        val repository = createRepository()
+        repository.saveOrUpdate(
+            episodeId = 1,
+            positionMillis = 20_000,
+            subjectId = 10,
+            durationMillis = 100_000,
+        )
+        repository.saveOrUpdate(
+            episodeId = 2,
+            positionMillis = 30_000,
+            subjectId = 20,
+            durationMillis = 100_000,
+        )
+        val pendingOps = repository.pendingOpsFlow.first()
+
+        repository.deletePendingOps(listOf(pendingOps.first().id))
+
+        assertEquals(
+            pendingOps.drop(1).map { it.id },
+            repository.pendingOpsFlow.first().map { it.id },
+        )
+    }
+}

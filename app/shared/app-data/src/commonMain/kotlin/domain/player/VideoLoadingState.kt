@@ -1,0 +1,72 @@
+/*
+ * Copyright (C) 2024 OpenAni and contributors.
+ *
+ * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
+ * Use of this source code is governed by the GNU AGPLv3 license, which can be found at the following link.
+ *
+ * https://github.com/open-ani/ani/blob/main/LICENSE
+ */
+
+package me.him188.ani.app.domain.player
+
+import androidx.compose.runtime.Immutable
+import me.him188.ani.app.domain.media.cache.engine.MediaCacheEngineKey
+import me.him188.ani.app.domain.media.resolver.MediaResolver
+import me.him188.ani.app.domain.media.selector.MediaSelector
+import me.him188.ani.datasources.api.Media
+
+@Immutable
+sealed interface VideoLoadingState {
+    sealed interface Progressing : VideoLoadingState
+
+    /**
+     * 等待选择 [Media] ([MediaSelector])
+     */
+    data object Initial : VideoLoadingState
+
+    /**
+     * 在解析磁力链/寻找文件
+     */
+    data object ResolvingSource : VideoLoadingState, Progressing
+
+    /**
+     * WEB: 已经成功解析到 m3u8 链接
+     * BT: 要解析磁力链, 查询元数据
+     * 云盘: 要查询文件并等待取流就绪
+     *
+     * [engineKey] 为 `null` 表示不经过种子引擎.
+     */
+    data class DecodingData(
+        val engineKey: MediaCacheEngineKey?,
+    ) : VideoLoadingState, Progressing
+
+    /**
+     * 文件成功找到
+     *
+     * [engineKey] 是实际承载播放的引擎, 为 `null` 表示不经过种子引擎. 打开阶段可能从云盘回退到本地
+     * BT, 因此它未必等于 [DecodingData.engineKey].
+     */
+    data class Succeed(
+        val engineKey: MediaCacheEngineKey?,
+    ) : VideoLoadingState, Progressing
+
+    sealed class Failed : VideoLoadingState
+    data object ResolutionTimedOut : Failed()
+    data object NetworkError : Failed()
+    data object Cancelled : Failed()
+
+    /**
+     * 不支持的媒体, 或者说是未启用支持该媒体的 [MediaResolver]
+     */
+    data object UnsupportedMedia : Failed()
+    data object NoMatchingFile : Failed()
+
+    /**
+     * 负责加载网页的引擎未初始化或已不可用, 所有网页资源都无法解析.
+     * 自动换源对此无效, 见 [me.him188.ani.app.domain.player.extension.PlayerLoadErrorHandler].
+     */
+    data object WebEngineUnavailable : Failed()
+    data class UnknownError(
+        val cause: Throwable,
+    ) : Failed()
+}

@@ -67,11 +67,15 @@ class StorageService {
 
   Future<void> addHistory(HistoryItem item) async {
     final history = await loadHistory();
+    
     // 移除同一个剧集，保证最新看过的在最上面
     history.removeWhere((h) => h.episodeUrl == item.episodeUrl);
     history.insert(0, item);
-    // 只保留最近 50 条
-    if (history.length > 50) history.removeLast();
+    
+    // 修复 Bug 3: 使用 while 循环，确保严格不超过 50 条
+    while (history.length > 50) {
+      history.removeLast();
+    }
     
     final file = await _historyFile();
     await file.writeAsString(jsonEncode(history.map((h) => h.toJson()).toList()));

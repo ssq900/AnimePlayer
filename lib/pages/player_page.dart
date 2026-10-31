@@ -49,6 +49,7 @@ class _PlayerPageState extends State<PlayerPage> {
       if (!mounted) return;
       _resolvedUrl = url;
 
+      // 保存到历史记录
       await _storage.addHistory(HistoryItem(
         ruleId: widget.rule.id,
         ruleName: widget.rule.name,
@@ -84,7 +85,8 @@ class _PlayerPageState extends State<PlayerPage> {
     try {
       final path = Uri.parse(url).path.toLowerCase();
       return path.endsWith('.mp4') || path.endsWith('.m3u8') ||
-          path.endsWith('.webm') || path.endsWith('.mkv');
+          path.endsWith('.webm') || path.endsWith('.mkv') ||
+          path.endsWith('.flv') || path.endsWith('.m4v');
     } catch (_) {
       return false;
     }
@@ -211,6 +213,31 @@ class _PlayerPageState extends State<PlayerPage> {
                           FilledButton(
                             onPressed: () => _openExternal(_resolvedUrl ?? widget.episodeUrl),
                             child: const Text('打开外部页面'),
+                          ),
+                          const SizedBox(height: 8),
+                          TextButton(
+                            onPressed: () async {
+                              setState(() => _loading = true);
+                              try {
+                                final c = VideoPlayerController.networkUrl(Uri.parse(_resolvedUrl ?? widget.episodeUrl));
+                                await c.initialize();
+                                if (mounted) {
+                                  setState(() {
+                                    _controller = c;
+                                    _loading = false;
+                                  });
+                                  c.play();
+                                }
+                              } catch (e) {
+                                if (mounted) {
+                                  setState(() => _loading = false);
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text('无法作为直链播放: $e')),
+                                  );
+                                }
+                              }
+                            },
+                            child: const Text('尝试作为直链播放'),
                           ),
                         ],
                       ),

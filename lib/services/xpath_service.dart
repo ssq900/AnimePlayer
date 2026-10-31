@@ -18,7 +18,6 @@ class XPathService {
           mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
           useHybridComposition: true,
         ),
-        // 核心优化：不等待完全加载，进度达到 50% 就提取，防止被慢资源卡死
         onProgressChanged: (controller, progress) async {
           if (progress >= 50 && !completer.isCompleted) {
             try {
@@ -31,7 +30,6 @@ class XPathService {
           }
         },
         onLoadStop: (controller, url) async {
-          // 兜底：如果进度没到 50% 但加载完了，也提取
           if (!completer.isCompleted) {
             try {
               final html = await controller.evaluateJavascript(source: "document.documentElement.outerHTML");
@@ -47,7 +45,6 @@ class XPathService {
       );
 
       await webView.run();
-      // 超时放宽到 30 秒
       final result = await completer.future.timeout(const Duration(seconds: 30));
       return result;
     } catch (e) {
@@ -76,12 +73,25 @@ class XPathService {
     final htmlText = await fetchHtml(searchUrl);
     final doc = _parse(htmlText);
     final container = doc.querySelector(rule.searchSelector);
-    if (container == null) return [];
+    
+    if (container == null) {
+      // 找不到容器时，返回空列表，不再崩溃，避免 UI 卡死
+      return [];
+    }
 
     final String itemSelector = rule.animeLinkSelector.trim().isEmpty ? '*' : rule.animeLinkSelector;
-    final items = (container.localName == 'li' || container.localName == 'a' || container.localName == 'div')
-        ? [container] 
-        : container.querySelectorAll(itemSelector);
+    List<Element> items = [];
+    
+    try {
+      if (container.matches(itemSelector)) {
+        items = [container];
+      } else {
+        items = container.querySelectorAll(itemSelector);
+      }
+    } catch (_) {
+      // 兼容部分复杂的 CSS 伪类，降级处理
+      items = container.querySelectorAll(itemSelector);
+    }
         
     return items.map((el) {
       final anchor = el.localName == 'a' ? el : el.querySelector('a');

@@ -55,9 +55,8 @@ class KazumiService {
     String css = xpath.trim();
     if (css.startsWith('.') || css.startsWith('#')) return css;
 
-    css = css.replaceAllMapped(RegExp(r'(\w+)\[(\d+)\]'), (match) {
-      return '${match.group(1)}:nth-of-type(${match.group(2)})';
-    });
+    // 核心修复：直接删除数字索引，不再转换为不支持的 nth-of-type
+    css = css.replaceAll(RegExp(r'\[\d+\]'), '');
 
     final regClass = RegExp(r'''//\w+\[@class=["']([^"']+)["']\]''');
     if (regClass.hasMatch(css)) {
@@ -76,6 +75,10 @@ class KazumiService {
     css = css.replaceAll(RegExp(r'\[@.*?\]'), '');
     css = css.replaceAll(RegExp(r'\s+'), ' ').trim();
     if (css.startsWith('>')) css = css.substring(1).trim();
+    
+    // 如果清理后变成空的，给个默认标签防崩溃
+    if (css.isEmpty) return 'a';
+    
     return css;
   }
 

@@ -74,30 +74,29 @@ class XPathService {
     final doc = _parse(htmlText);
     final container = doc.querySelector(rule.searchSelector);
     
-    if (container == null) {
-      // 找不到容器时，返回空列表，不再崩溃，避免 UI 卡死
-      return [];
-    }
+    if (container == null) return [];
 
     final String itemSelector = rule.animeLinkSelector.trim().isEmpty ? '*' : rule.animeLinkSelector;
     List<Element> items = [];
     
     try {
-      if (container.matches(itemSelector)) {
+      // 修复：使用 matchesSelector 而不是 matches
+      if (container.matchesSelector(itemSelector)) {
         items = [container];
       } else {
-        items = container.querySelectorAll(itemSelector);
+        // 修复：显式转换为 List<Element>
+        items = container.querySelectorAll(itemSelector).cast<Element>();
       }
     } catch (_) {
-      // 兼容部分复杂的 CSS 伪类，降级处理
-      items = container.querySelectorAll(itemSelector);
+      items = container.querySelectorAll(itemSelector).cast<Element>();
     }
         
     return items.map((el) {
       final anchor = el.localName == 'a' ? el : el.querySelector('a');
       final title = _cleanText(anchor?.attributes['title'] ?? anchor?.text ?? el.text);
       final href = anchor?.attributes['href'] ?? '';
-      return SearchResult(title: title, link: _absolute(rule.baseUrl, href));
+      // 修复：传入 rule 参数
+      return SearchResult(title: title, link: _absolute(rule.baseUrl, href), rule: rule);
     }).where((r) => r.link.isNotEmpty && r.title.isNotEmpty).toList();
   }
 

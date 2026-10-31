@@ -54,9 +54,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     onPressed: () async {
                       await Navigator.push(
                         context,
-                        MaterialPageRoute(
-                          builder: (_) => RuleEditPage(rule: r),
-                        ),
+                        MaterialPageRoute(builder: (_) => RuleEditPage(rule: r)),
                       );
                       _load();
                     },
@@ -94,9 +92,7 @@ class _SettingsPageState extends State<SettingsPage> {
               onPressed: () async {
                 await Navigator.push(
                   context,
-                  MaterialPageRoute(
-                    builder: (_) => RuleEditPage(rule: AnimeRule.empty()),
-                  ),
+                  MaterialPageRoute(builder: (_) => RuleEditPage(rule: AnimeRule.empty())),
                 );
                 _load();
               },
@@ -109,7 +105,6 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _showKazumiRules() async {
-    // 显示 Loading
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -118,12 +113,11 @@ class _SettingsPageState extends State<SettingsPage> {
 
     try {
       final kz = KazumiService();
-      final rulesList = await kz.fetchRules();
+      final indexList = await kz.fetchRuleIndex();
 
       if (!mounted) return;
-      Navigator.of(context, rootNavigator: true).pop(); // 关掉 Loading
+      Navigator.of(context, rootNavigator: true).pop();
 
-      // 展示拉取到的列表
       showModalBottomSheet(
         context: context,
         isScrollControlled: true,
@@ -149,41 +143,21 @@ class _SettingsPageState extends State<SettingsPage> {
                   Expanded(
                     child: ListView.builder(
                       controller: scrollController,
-                      itemCount: rulesList.length,
+                      itemCount: indexList.length,
                       itemBuilder: (_, index) {
-                        final kRule = rulesList[index];
+                        final item = indexList[index];
+                        final name = item['name'] ?? '未知规则';
+                        final version = item['version'] ?? '1.0';
+                        final lastUpdate = item['last_update'] ?? '';
+                        final fileName = item['file'] ?? '${item['name']}.json';
+
                         return ListTile(
-                          title: Text(kRule['name'] ?? '未知规则'),
-                          subtitle: Text(
-                            kRule['baseUrl'] ?? '',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          trailing: const Icon(Icons.add_circle_outline),
+                          title: Text('$name (v$version)'),
+                          subtitle: Text('更新: $lastUpdate'),
+                          trailing: const Icon(Icons.download_for_offline_outlined),
                           onTap: () async {
-                            // 转换并保存
-                            final converted = kz.convertKazumiRule(kRule);
-                            
-                            // 生成新的规则对象
-                            final newRule = AnimeRule(
-                              id: DateTime.now().millisecondsSinceEpoch.toString(),
-                              name: converted['name'] ?? '未命名',
-                              baseUrl: converted['baseUrl'] ?? '',
-                              searchSelector: converted['searchSelector'] ?? '',
-                              animeLinkSelector: converted['animeLinkSelector'] ?? '',
-                              episodeListSelector: converted['episodeListSelector'] ?? '',
-                              episodeLinkSelector: converted['episodeLinkSelector'] ?? '',
-                            );
-                            
-                            await _storage.upsertRule(newRule);
-                            
-                            if (mounted) {
-                              Navigator.pop(sheetContext); // 关掉底部弹窗
-                              _load(); // 刷新当前页的规则列表
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(content: Text('已导入: ${newRule.name}')),
-                              );
-                            }
+                            Navigator.pop(sheetContext);
+                            _downloadAndSave(kz, fileName, name);
                           },
                         );
                       },
@@ -197,9 +171,49 @@ class _SettingsPageState extends State<SettingsPage> {
       );
     } catch (e) {
       if (mounted) {
-        Navigator.of(context, rootNavigator: true).pop(); // 关掉 Loading
+        Navigator.of(context, rootNavigator: true).pop();
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('拉取失败: $e')),
+          SnackBar(content: Text('索引拉取失败: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _downloadAndSave(KazumiService kz, String fileName, String ruleName) async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => Center(child: CircularProgressIndicator(valueColor: AlwaysStoppedAnimation(Colors.deepPurple))),
+    );
+
+    try {
+      final detail = await kz.fetchRuleDetail(fileName);
+      final converted = kz.convertKazumiRule(detail);
+
+      final newRule = AnimeRule(
+        id: DateTime.now().millisecondsSinceEpoch.toString(),
+        name: converted['name'] ?? ruleName,
+        baseUrl: converted['baseUrl'] ?? '',
+        searchSelector: converted['searchSelector'] ?? '',
+        animeLinkSelector: converted['animeLinkSelector'] ?? '',
+        episodeListSelector: converted['episodeListSelector'] ?? '',
+        episodeLinkSelector: converted['episodeLinkSelector'] ?? '',
+      );
+
+      await _storage.upsertRule(newRule);
+
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+        _load();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('已导入: ${newRule.name}')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('下载失败: $e')),
         );
       }
     }

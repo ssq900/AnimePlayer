@@ -59,13 +59,13 @@ class KazumiService {
       return '${match.group(1)}:nth-of-type(${match.group(2)})';
     });
 
-    final regClass = RegExp(r'//\w+\[@class=["'']([^"'']+)["'']\]');
+    final regClass = RegExp(r'''//\w+\[@class=["']([^"']+)["']\]''');
     if (regClass.hasMatch(css)) {
       final match = regClass.firstMatch(css);
       return '.${match!.group(1)!.replaceAll(' ', '.')}';
     }
 
-    final regId = RegExp(r'//\w+\[@id=["'']([^"'']+)["'']\]');
+    final regId = RegExp(r'''//\w+\[@id=["']([^"']+)["']\]''');
     if (regId.hasMatch(css)) {
       final match = regId.firstMatch(css);
       return '#${match!.group(1)}';

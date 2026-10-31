@@ -1,54 +1,66 @@
+import 'dart:async';
 import 'dart:convert';
-import 'dart:io'; // 保留用于异常捕获
+import 'dart:io';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'package:html/dom.dart';
-import 'package:http/http.dart' as http;
 import 'package:gbk_codec/gbk_codec.dart';
 import '../models/rule.dart';
 
 class XPathService {
-  final http.Client _client;
-
-  // 退回标准初始化，不再重写 HttpClient，保证绝对能编译通过
-  XPathService({http.Client? client}) : _client = client ?? http.Client();
-
+  // 核心黑科技：使用隐藏的 WebView 抓取网页
   Future<String> fetchHtml(String url) async {
-    final headers = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-      'Accept-Language': 'zh-CN,zh;q=0.9',
-      'Referer': Uri.parse(url).origin,
-    };
+    final completer = Completer<String>();
+    HeadlessInAppWebView? webView;
 
     try {
-      final resp = await _client.get(
-        Uri.parse(url),
-        headers: headers,
-      ).timeout(const Duration(seconds: 15));
+      webView = HeadlessInAppWebView(
+        initialUrlRequest: URLRequest(url: WebUri(url)),
+        initialSettings: InAppWebViewSettings(
+          javaScriptEnabled: true,
+          // 伪装成手机端浏览器
+          userAgent: "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+          // 允许混合内容（HTTPS 页面加载 HTTP 资源）
+          mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
+          useHybridComposition: true, // 兼容性更好
+        ),
+        onLoadStop: (controller, url) async {
+          if (!completer.isCompleted) {
+            // 延迟 800 毫秒，给动态加载的 JS 留出渲染时间
+            await Future.delayed(const Duration(milliseconds: 800));
+            try {
+              // 获取渲染后的完整 HTML
+              final html = await controller.evaluateJavascript(source: "document.documentElement.outerHTML");
+              if (html != null) {
+                completer.complete(html.toString());
+              } else {
+                completer.completeError(Exception("获取页面源码为空"));
+              }
+            } catch (e) {
+              completer.completeError(Exception("提取HTML失败: $e"));
+            }
+          }
+        },
+        onReceivedError: (controller, request, error) {
+          if (!completer.isCompleted && request.isForMainFrame == true) {
+            completer.completeError(Exception("WebView加载失败，可能是网络不通或源站拒绝访问。(${error.description})"));
+          }
+        },
+      );
 
-      if (resp.statusCode != 200) {
-        throw Exception('HTTP 状态码错误: ${resp.statusCode}');
-      }
-      
-      return _decodeHtml(resp);
-    } on SocketException catch (_) {
-      throw Exception('DNS解析失败，请检查网络、更换私人DNS或开启VPN全局模式。');
-    } on HandshakeException catch (_) {
-      throw Exception('TLS握手失败，源站证书异常或系统版本过低。');
+      // 启动无头 WebView
+      await webView.run();
+
+      // 设置 20 秒超时
+      final result = await completer.future.timeout(const Duration(seconds: 20));
+      return result;
     } catch (e) {
-      throw Exception('网络请求异常: $e');
-    }
-  }
-
-  String _decodeHtml(http.Response resp) {
-    final contentType = resp.headers['content-type'] ?? '';
-    if (contentType.toLowerCase().contains('gbk') || contentType.toLowerCase().contains('gb2312')) {
-      return gbk.decode(resp.bodyBytes);
-    }
-    try {
-      return utf8.decode(resp.bodyBytes, allowMalformed: true);
-    } catch (_) {
-      return latin1.decode(resp.bodyBytes);
+      throw Exception('请求异常: $e');
+    } finally {
+      // 无论成功失败，必须销毁 WebView，防止内存泄漏！
+      if (webView != null) {
+        await webView.dispose();
+      }
     }
   }
 

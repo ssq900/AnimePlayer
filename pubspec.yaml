@@ -1,23 +1,22 @@
 name: anime_aggregator
-description: XPath-driven anime aggregator, no bundled sources.
+description: XPath-driven anime aggregator
 publish_to: 'none'
 version: 1.0.0+1
 
 environment:
   sdk: '>=3.5.0 <4.0.0'
-  flutter: '>=3.35.0 <3.36.0'   # 严格锁定 Flutter 3.35.x，防止 minSdk 漂移
+  flutter: '>=3.35.0 <3.36.0'
 
 dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.8
-
-  # ===== 以下依赖均已核对 Android minSdk ≤ 24 =====
-  http: ^1.2.2                    # 纯 Dart，无 Android 原生依赖
-  html: ^0.15.4                   # 纯 Dart，无 Android 原生依赖
-  shared_preferences: ^2.5.3      # pub.dev Support: SDK 24+
-  url_launcher: ^6.3.1            # 最新 android impl 已移除 SDK<24 代码，minSdk 24
-  video_player: ^2.9.5            # pub.dev Support: SDK 24+；ExoPlayer 回退兼容 API 24
+  http: ^1.2.2
+  html: ^0.15.4
+  shared_preferences: ^2.5.3
+  path_provider: ^2.1.5
+  url_launcher: ^6.3.1
+  video_player: ^2.9.5
 
 dev_dependencies:
   flutter_test:

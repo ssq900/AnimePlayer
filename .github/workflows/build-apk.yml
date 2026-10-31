@@ -25,25 +25,14 @@ jobs:
       - name: Flutter pub get
         run: flutter pub get
 
-      # 核心修复：强制重新生成骨架，并修改 minSdk 为 24
       - name: Ensure Android Scaffold
         run: |
-          # 强制生成，Flutter 会补齐缺失的 android 目录，不会覆盖你写好的 Dart 代码
           flutter create . --platforms android --project-name anime_aggregator --org com.example
-          
-          # 兼容旧版 Groovy 文件 (.gradle)
-          if [ -f "android/app/build.gradle" ]; then
-            sed -i 's/minSdk flutter.minSdkVersion/minSdk 24/g' android/app/build.gradle
-            sed -i 's/minSdkVersion flutter.minSdkVersion/minSdk 24/g' android/app/build.gradle
-            sed -i 's/minSdk 24/minSdk = 24/g' android/app/build.gradle
-            echo "Patched build.gradle"
-          fi
-          
-          # 兼容新版 Kotlin 文件 (.gradle.kts) - 你的报错就是缺了这段
           if [ -f "android/app/build.gradle.kts" ]; then
             sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/g' android/app/build.gradle.kts
-            sed -i 's/minSdkVersion flutter.minSdkVersion/minSdk = 24/g' android/app/build.gradle.kts
-            echo "Patched build.gradle.kts"
+          fi
+          if [ -f "android/app/build.gradle" ]; then
+            sed -i 's/minSdk flutter.minSdkVersion/minSdk = 24/g' android/app/build.gradle
           fi
 
       - name: Decode keystore
@@ -57,6 +46,9 @@ jobs:
           storeFile=release.keystore
           EOF
           fi
+      - name: Analyze Code
+        run: flutter analyze
+        continue-on-error: true
 
       - name: Build APK
         run: flutter build apk --release

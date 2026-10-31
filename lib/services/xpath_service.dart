@@ -1,7 +1,8 @@
+import 'dart:convert'; // 必须引入
 import 'package:html/parser.dart' as html_parser;
 import 'package:html/dom.dart';
 import 'package:http/http.dart' as http;
-import 'package:gbk_codec/gbk_codec.dart'; // 处理老网站 GBK 编码
+import 'package:gbk_codec/gbk_codec.dart';
 import '../models/rule.dart';
 
 class XPathService {
@@ -10,16 +11,11 @@ class XPathService {
   XPathService({http.Client? client}) : _client = client ?? http.Client();
 
   Future<String> fetchHtml(String url) async {
-    // 终极伪装：加上 Referer 和 Sec-Fetch 等头部，骗过大部分防盗链
     final headers = {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
       'Accept-Language': 'zh-CN,zh;q=0.9',
-      'Referer': Uri.parse(url).origin, // 告诉服务器我是从你们自己主页点过来的
-      'Sec-Fetch-Dest': 'document',
-      'Sec-Fetch-Mode': 'navigate',
-      'Sec-Fetch-Site': 'same-origin',
-      'Upgrade-Insecure-Requests': '1',
+      'Referer': Uri.parse(url).origin,
     };
 
     try {
@@ -38,37 +34,27 @@ class XPathService {
     }
   }
 
-  // 核心黑科技：自动探测网页编码（解决老网站乱码问题）
   String _decodeHtml(http.Response resp) {
-    // 尝试从响应头获取编码
     final contentType = resp.headers['content-type'] ?? '';
     if (contentType.toLowerCase().contains('gbk') || contentType.toLowerCase().contains('gb2312')) {
       return gbk.decode(resp.bodyBytes);
     }
 
-    // 尝试用 UTF-8 解码
     try {
-      final utf8Str = String.fromCharCodes(resp.bodyBytes);
-      // 如果解码出来的乱码很多，说明不是 UTF-8
-      final head = utf8Str.length > 1000 ? utf8Str.substring(0, 1000) : utf8Str;
-      if (head.contains('charset="gbk"') || head.contains("charset='gbk'") || head.contains('charset=gb2312')) {
-        return gbk.decode(resp.bodyBytes);
-      }
-      return utf8Str;
+      return utf8.decode(resp.bodyBytes, allowMalformed: true);
     } catch (_) {
-      // 默认强行按 UTF-8 处理
-      return String.fromCharCodes(resp.bodyBytes);
+      return latin1.decode(resp.bodyBytes);
     }
   }
 
-  Document _parse(String htmlText) =>
-      html_parser.parse(htmlText, encoding: 'utf-8');
+  Document _parse(String htmlText) => html_parser.parse(htmlText, encoding: 'utf-8');
 
   Future<List<SearchResult>> search(AnimeRule rule, String keyword) async {
+    if (rule.searchSelector.trim().isEmpty) return [];
+
     final encoded = Uri.encodeComponent(keyword);
     String searchUrl = rule.baseUrl;
     
-    // 处理 URL 拼接
     if (searchUrl.contains('{keyword}')) {
       searchUrl = searchUrl.replaceAll('{keyword}', encoded);
     } else {
@@ -82,9 +68,10 @@ class XPathService {
     final container = doc.querySelector(rule.searchSelector);
     if (container == null) return [];
 
+    final String itemSelector = rule.animeLinkSelector.trim().isEmpty ? '*' : rule.animeLinkSelector;
     final items = (container.localName == 'li' || container.localName == 'a' || container.localName == 'div')
         ? [container] 
-        : container.querySelectorAll(rule.animeLinkSelector);
+        : container.querySelectorAll(itemSelector);
         
     return items.map((el) {
       final anchor = el.localName == 'a' ? el : el.querySelector('a');
@@ -95,6 +82,8 @@ class XPathService {
   }
 
   Future<List<EpisodeItem>> fetchEpisodes(AnimeRule rule, String detailUrl) async {
+    if (rule.episodeListSelector.trim().isEmpty) return [];
+
     final htmlText = await fetchHtml(detailUrl);
     final doc = _parse(htmlText);
 
@@ -108,6 +97,8 @@ class XPathService {
   }
 
   Future<String> resolveEpisodeLink(AnimeRule rule, String episodeUrl) async {
+    if (rule.episodeLinkSelector.trim().isEmpty) return episodeUrl;
+
     final htmlText = await fetchHtml(episodeUrl);
     final doc = _parse(htmlText);
     final el = doc.querySelector(rule.episodeLinkSelector);
@@ -128,6 +119,5 @@ class XPathService {
     }
   }
 
-  String _cleanText(String? t) =>
-      (t ?? '').replaceAll(RegExp(r'\s+'), ' ').trim();
+  String _cleanText(String? t) => (t ?? '').replaceAll(RegExp(r'\s+'), ' ').trim();
 }

@@ -35,35 +35,47 @@ class _PlayerPageState extends State<PlayerPage> {
 
   Future<void> _resolve() async {
     try {
-      final url = await _xpath.resolveEpisodeLink(
-        widget.rule,
-        widget.episodeUrl,
-      );
+      final url = await _xpath.resolveEpisodeLink(widget.rule, widget.episodeUrl);
+      if (!mounted) return;
+
       _resolvedUrl = url;
 
       if (_isDirectVideo(url)) {
         final c = VideoPlayerController.networkUrl(Uri.parse(url));
         await c.initialize();
+        
         if (!mounted) {
           await c.dispose();
           return;
         }
+        
         setState(() => _controller = c);
         c.play();
       }
     } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
+      if (mounted) {
+        setState(() {
+          _error = e.toString();
+          _resolvedUrl = null;
+        });
+      }
     } finally {
       if (mounted) setState(() => _loading = false);
     }
   }
 
   bool _isDirectVideo(String url) {
-    final u = url.toLowerCase();
-    return u.endsWith('.mp4') ||
-        u.endsWith('.m3u8') ||
-        u.endsWith('.webm') ||
-        u.endsWith('.mkv');
+    try {
+      final path = Uri.parse(url).path.toLowerCase();
+      return path.endsWith('.mp4') ||
+          path.endsWith('.m3u8') ||
+          path.endsWith('.webm') ||
+          path.endsWith('.mkv') ||
+          path.endsWith('.flv') ||
+          path.endsWith('.ts');
+    } catch (_) {
+      return false;
+    }
   }
 
   @override
@@ -88,9 +100,7 @@ class _PlayerPageState extends State<PlayerPage> {
                         Text('解析失败：$_error'),
                         const SizedBox(height: 16),
                         FilledButton(
-                          onPressed: () => _openExternal(
-                            _resolvedUrl ?? widget.episodeUrl,
-                          ),
+                          onPressed: () => _openExternal(_resolvedUrl ?? widget.episodeUrl),
                           child: const Text('用外部浏览器打开'),
                         ),
                       ],
@@ -109,15 +119,8 @@ class _PlayerPageState extends State<PlayerPage> {
                           const Text('解析结果为网页，需交给外部应用处理'),
                           const SizedBox(height: 16),
                           FilledButton(
-                            onPressed: () =>
-                                _openExternal(_resolvedUrl ?? widget.episodeUrl),
+                            onPressed: () => _openExternal(_resolvedUrl ?? widget.episodeUrl),
                             child: const Text('打开外部页面'),
-                          ),
-                          const SizedBox(height: 8),
-                          TextButton(
-                            onPressed: () =>
-                                _openExternal(_resolvedUrl ?? widget.episodeUrl),
-                            child: const Text('尝试用外部播放器打开'),
                           ),
                         ],
                       ),

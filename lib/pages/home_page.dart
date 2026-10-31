@@ -15,7 +15,7 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   final _storage = StorageService();
   List<AnimeRule> _rules = [];
-  AnimeRule? _selected;
+  String? _selectedId;
 
   @override
   void initState() {
@@ -26,9 +26,17 @@ class _HomePageState extends State<HomePage> {
   Future<void> _load() async {
     final rules = await _storage.loadRules();
     if (!mounted) return;
+    
     setState(() {
       _rules = rules;
-      _selected = rules.isNotEmpty ? rules.first : null;
+      if (rules.isNotEmpty) {
+        final exists = rules.any((r) => r.id == _selectedId);
+        if (!exists) {
+          _selectedId = rules.first.id;
+        }
+      } else {
+        _selectedId = null;
+      }
     });
   }
 
@@ -67,32 +75,32 @@ class _HomePageState extends State<HomePage> {
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
-                DropdownButtonFormField<AnimeRule>(
-                  value: _selected,
+                DropdownButtonFormField<String>(
+                  value: _selectedId,
                   decoration: const InputDecoration(
                     labelText: '当前规则',
                     border: OutlineInputBorder(),
                   ),
                   items: _rules
                       .map((r) => DropdownMenuItem(
-                            value: r,
+                            value: r.id,
                             child: Text(r.name.isEmpty ? r.baseUrl : r.name),
                           ))
                       .toList(),
-                  onChanged: (v) => setState(() => _selected = v),
+                  onChanged: (v) => setState(() => _selectedId = v),
                 ),
                 const SizedBox(height: 24),
                 FilledButton.icon(
                   icon: const Icon(Icons.search),
                   label: const Text('开始搜索'),
-                  onPressed: _selected == null
+                  onPressed: _selectedId == null
                       ? null
                       : () {
+                          final currentRule = _rules.firstWhere((r) => r.id == _selectedId);
                           Navigator.push(
                             context,
                             MaterialPageRoute(
-                              builder: (_) =>
-                                  SearchPage(rule: _selected!),
+                              builder: (_) => SearchPage(rule: currentRule),
                             ),
                           );
                         },

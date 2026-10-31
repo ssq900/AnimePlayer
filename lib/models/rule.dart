@@ -27,15 +27,17 @@ class AnimeRule {
         'episodeLinkSelector': episodeLinkSelector,
       };
 
-  factory AnimeRule.fromJson(Map<String, dynamic> j) => AnimeRule(
-        id: j['id'] as String,
-        name: j['name'] as String,
-        baseUrl: j['baseUrl'] as String,
-        searchSelector: j['searchSelector'] as String,
-        animeLinkSelector: j['animeLinkSelector'] as String,
-        episodeListSelector: j['episodeListSelector'] as String,
-        episodeLinkSelector: j['episodeLinkSelector'] as String,
-      );
+  factory AnimeRule.fromJson(Map<String, dynamic> j) {
+    return AnimeRule(
+      id: (j['id'] as String?) ?? DateTime.now().millisecondsSinceEpoch.toString(),
+      name: (j['name'] as String?) ?? '',
+      baseUrl: (j['baseUrl'] as String?) ?? '',
+      searchSelector: (j['searchSelector'] as String?) ?? '',
+      animeLinkSelector: (j['animeLinkSelector'] as String?) ?? '',
+      episodeListSelector: (j['episodeListSelector'] as String?) ?? '',
+      episodeLinkSelector: (j['episodeLinkSelector'] as String?) ?? '',
+    );
+  }
 
   static AnimeRule empty() => AnimeRule(
         id: DateTime.now().millisecondsSinceEpoch.toString(),

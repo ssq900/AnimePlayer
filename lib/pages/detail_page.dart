@@ -71,6 +71,7 @@ class _DetailPageState extends State<DetailPage> {
                                   rule: widget.rule,
                                   episodeUrl: ep.link,
                                   title: ep.title,
+                                  animeTitle: widget.title, 
                                 ),
                               ),
                             );

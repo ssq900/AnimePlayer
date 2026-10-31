@@ -61,3 +61,39 @@ class EpisodeItem {
   final String link;
   const EpisodeItem({required this.title, required this.link});
 }
+// 在文件最底部追加这个模型
+class HistoryItem {
+  final String ruleId;
+  final String ruleName;
+  final String animeTitle; // 番剧名
+  final String episodeTitle; // 剧集名
+  final String episodeUrl;
+  final int timestamp;
+
+  HistoryItem({
+    required this.ruleId,
+    required this.ruleName,
+    required this.animeTitle,
+    required this.episodeTitle,
+    required this.episodeUrl,
+    required this.timestamp,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'ruleId': ruleId,
+        'ruleName': ruleName,
+        'animeTitle': animeTitle,
+        'episodeTitle': episodeTitle,
+        'episodeUrl': episodeUrl,
+        'timestamp': timestamp,
+      };
+
+  factory HistoryItem.fromJson(Map<String, dynamic> j) => HistoryItem(
+        ruleId: j['ruleId'] ?? '',
+        ruleName: j['ruleName'] ?? '',
+        animeTitle: j['animeTitle'] ?? '',
+        episodeTitle: j['episodeTitle'] ?? '',
+        episodeUrl: j['episodeUrl'] ?? '',
+        timestamp: j['timestamp'] ?? 0,
+      );
+}

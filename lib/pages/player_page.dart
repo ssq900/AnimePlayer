@@ -1,19 +1,23 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 import '../models/rule.dart';
 import '../services/xpath_service.dart';
+import '../services/storage_service.dart';
 
 class PlayerPage extends StatefulWidget {
   final AnimeRule rule;
   final String episodeUrl;
   final String title;
+  final String animeTitle; // 新增，用于历史记录
 
   const PlayerPage({
     super.key,
     required this.rule,
     required this.episodeUrl,
     required this.title,
+    required this.animeTitle,
   });
 
   @override
@@ -22,10 +26,16 @@ class PlayerPage extends StatefulWidget {
 
 class _PlayerPageState extends State<PlayerPage> {
   final _xpath = XPathService();
+  final _storage = StorageService();
+  
   VideoPlayerController? _controller;
   bool _loading = true;
   String? _resolvedUrl;
   String? _error;
+
+  double _playbackSpeed = 1.0;
+  Timer? _sleepTimer;
+  int _sleepMinutesRemaining = 0;
 
   @override
   void initState() {
@@ -40,6 +50,16 @@ class _PlayerPageState extends State<PlayerPage> {
 
       _resolvedUrl = url;
 
+      // 记录历史
+      await _storage.addHistory(HistoryItem(
+        ruleId: widget.rule.id,
+        ruleName: widget.rule.name,
+        animeTitle: widget.animeTitle,
+        episodeTitle: widget.title,
+        episodeUrl: widget.episodeUrl,
+        timestamp: DateTime.now().millisecondsSinceEpoch,
+      ));
+
       if (_isDirectVideo(url)) {
         final c = VideoPlayerController.networkUrl(Uri.parse(url));
         await c.initialize();
@@ -48,7 +68,6 @@ class _PlayerPageState extends State<PlayerPage> {
           await c.dispose();
           return;
         }
-        
         setState(() => _controller = c);
         c.play();
       }
@@ -67,19 +86,43 @@ class _PlayerPageState extends State<PlayerPage> {
   bool _isDirectVideo(String url) {
     try {
       final path = Uri.parse(url).path.toLowerCase();
-      return path.endsWith('.mp4') ||
-          path.endsWith('.m3u8') ||
-          path.endsWith('.webm') ||
-          path.endsWith('.mkv') ||
-          path.endsWith('.flv') ||
-          path.endsWith('.ts');
+      return path.endsWith('.mp4') || path.endsWith('.m3u8') ||
+          path.endsWith('.webm') || path.endsWith('.mkv');
     } catch (_) {
       return false;
     }
   }
 
+  void _setSpeed(double speed) {
+    if (_controller != null) {
+      _controller!.setPlaybackSpeed(speed);
+      setState(() => _playbackSpeed = speed);
+    }
+  }
+
+  void _startSleepTimer(int minutes) {
+    _sleepTimer?.cancel();
+    setState(() => _sleepMinutesRemaining = minutes);
+    
+    _sleepTimer = Timer.periodic(const Duration(minutes: 1), (timer) {
+      if (_sleepMinutesRemaining <= 1) {
+        timer.cancel();
+        _controller?.pause();
+        if (mounted) {
+          setState(() => _sleepMinutesRemaining = 0);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('定时关闭已生效，视频已暂停')),
+          );
+        }
+      } else {
+        if (mounted) setState(() => _sleepMinutesRemaining--);
+      }
+    });
+  }
+
   @override
   void dispose() {
+    _sleepTimer?.cancel();
     _controller?.dispose();
     super.dispose();
   }
@@ -87,7 +130,38 @@ class _PlayerPageState extends State<PlayerPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(widget.title)),
+      appBar: AppBar(
+        title: Text(widget.title),
+        actions: [
+          if (_sleepMinutesRemaining > 0)
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.only(right: 16),
+                child: Text('${_sleepMinutesRemaining}分后停', style: const TextStyle(color: Colors.red)),
+              ),
+            ),
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert),
+            onSelected: (value) {
+              if (value.startsWith('sleep_')) {
+                final min = int.parse(value.split('_')[1]);
+                if (min == 0) {
+                  _sleepTimer?.cancel();
+                  setState(() => _sleepMinutesRemaining = 0);
+                } else {
+                  _startSleepTimer(min);
+                }
+              }
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem(value: 'sleep_15', child: Text('15分钟后暂停')),
+              const PopupMenuItem(value: 'sleep_30', child: Text('30分钟后暂停')),
+              const PopupMenuItem(value: 'sleep_60', child: Text('60分钟后暂停')),
+              const PopupMenuItem(value: 'sleep_0', child: Text('取消定时')),
+            ],
+          ),
+        ],
+      ),
       body: Center(
         child: _loading
             ? const CircularProgressIndicator()
@@ -107,9 +181,29 @@ class _PlayerPageState extends State<PlayerPage> {
                     ),
                   )
                 : _controller != null && _controller!.value.isInitialized
-                    ? AspectRatio(
-                        aspectRatio: _controller!.value.aspectRatio,
-                        child: VideoPlayer(_controller!),
+                    ? Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          AspectRatio(
+                            aspectRatio: _controller!.value.aspectRatio,
+                            child: VideoPlayer(_controller!),
+                          ),
+                          const SizedBox(height: 20),
+                          // 倍速切换按钮
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [0.5, 1.0, 1.5, 2.0].map((speed) {
+                              return Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 8),
+                                child: ChoiceChip(
+                                  label: Text('${speed}x'),
+                                  selected: _playbackSpeed == speed,
+                                  onSelected: (_) => _setSpeed(speed),
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                        ],
                       )
                     : Column(
                         mainAxisSize: MainAxisSize.min,

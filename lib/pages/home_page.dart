@@ -4,6 +4,8 @@ import '../services/storage_service.dart';
 import 'search_page.dart';
 import 'settings_page.dart';
 import 'player_page.dart';
+import 'schedule_page.dart';
+import 'stats_page.dart'; // 引入刚写的统计页面
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -16,7 +18,7 @@ class _HomePageState extends State<HomePage> {
   final _storage = StorageService();
   List<AnimeRule> _rules = [];
   List<HistoryItem> _history = [];
-  String? _selectedId;
+  final _searchController = TextEditingController();
 
   @override
   void initState() {
@@ -32,15 +34,26 @@ class _HomePageState extends State<HomePage> {
     setState(() {
       _rules = rules;
       _history = history;
-      if (rules.isNotEmpty) {
-        final exists = rules.any((r) => r.id == _selectedId);
-        if (!exists) {
-          _selectedId = rules.first.id;
-        }
-      } else {
-        _selectedId = null;
-      }
     });
+  }
+
+  void _startGlobalSearch() {
+    final keyword = _searchController.text.trim();
+    if (keyword.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请输入搜索关键词')));
+      return;
+    }
+    if (_rules.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请先在设置中导入规则')));
+      return;
+    }
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => SearchPage(rules: _rules),
+      ),
+    ).then((_) => _load());
   }
 
   @override
@@ -49,6 +62,23 @@ class _HomePageState extends State<HomePage> {
       appBar: AppBar(
         title: const Text('Anime Aggregator'),
         actions: [
+          // 统计入口
+          IconButton(
+            icon: const Icon(Icons.bar_chart),
+            tooltip: '观看统计',
+            onPressed: () {
+              Navigator.push(context, MaterialPageRoute(builder: (_) => const StatsPage()));
+            },
+          ),
+          // 日历入口
+          IconButton(
+            icon: const Icon(Icons.calendar_month),
+            tooltip: '追番日历',
+            onPressed: () {
+              Navigator.push(context, MaterialPageRoute(builder: (_) => SchedulePage(rules: _rules)));
+            },
+          ),
+          // 设置入口
           IconButton(
             icon: const Icon(Icons.settings),
             onPressed: () async {
@@ -64,63 +94,34 @@ class _HomePageState extends State<HomePage> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          if (_rules.isEmpty)
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  children: [
-                    const Text('还没有规则，请先去设置添加'),
-                    const SizedBox(height: 12),
-                    FilledButton(
-                      onPressed: () async {
-                        await Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsPage()));
-                        _load();
-                      },
-                      child: const Text('去添加'),
-                    ),
-                  ],
-                ),
+          // 搜索框
+          TextField(
+            controller: _searchController,
+            textInputAction: TextInputAction.search,
+            onSubmitted: (_) => _startGlobalSearch(),
+            decoration: InputDecoration(
+              hintText: '想看点什么？(全网多源聚合)',
+              prefixIcon: const Icon(Icons.search),
+              border: const OutlineInputBorder(),
+              suffixIcon: IconButton(
+                icon: const Icon(Icons.arrow_forward),
+                onPressed: _startGlobalSearch,
               ),
-            )
-          else ...[
-            DropdownButtonFormField<String>(
-              initialValue: _selectedId,
-              decoration: const InputDecoration(
-                labelText: '当前规则',
-                border: OutlineInputBorder(),
-              ),
-              items: _rules
-                  .map((r) => DropdownMenuItem(
-                        value: r.id,
-                        child: Text(r.name.isEmpty ? r.baseUrl : r.name),
-                      ))
-                  .toList(),
-              onChanged: (v) => setState(() => _selectedId = v),
             ),
-            const SizedBox(height: 12),
-            FilledButton.icon(
-              icon: const Icon(Icons.search),
-              label: const Text('开始搜索'),
-              onPressed: _selectedId == null
-                  ? null
-                  : () async {
-                      final currentRule = _rules.firstWhere((r) => r.id == _selectedId);
-                      await Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => SearchPage(rule: currentRule),
-                        ),
-                      );
-                      _load(); 
-                    },
-            ),
-          ],
+          ),
+          const SizedBox(height: 12),
+          FilledButton.icon(
+            icon: const Icon(Icons.travel_explore),
+            label: Text('使用 ${_rules.length} 个源进行聚合搜索'),
+            onPressed: _startGlobalSearch,
+            style: FilledButton.styleFrom(minimumSize: const Size(double.infinity, 48)),
+          ),
           
           const SizedBox(height: 32),
           
+          // 最近观看历史区
           if (_history.isNotEmpty) ...[
-            const Text('最近观看', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const Text('最近观看 (长按加入日历)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
             ..._history.take(10).map((h) {
               final targetRule = _rules.firstWhere(
@@ -151,7 +152,39 @@ class _HomePageState extends State<HomePage> {
                           animeTitle: h.animeTitle,
                         ),
                       ),
+                    ).then((_) => _load());
+                  },
+                  onLongPress: () async {
+                    // 长按加入追番日历
+                    final week = await showDialog<int>(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        title: const Text('加入追番日历'),
+                        content: const Text('选择每周更新的日子：'),
+                        actions: [
+                          for (int i = 1; i <= 7; i++)
+                            TextButton(
+                              onPressed: () => Navigator.pop(ctx, i),
+                              child: Text('周${['一','二','三','四','五','六','日'][i-1]}'),
+                            )
+                        ],
+                      ),
                     );
+                    if (week != null) {
+                      final schedules = await _storage.loadSchedules();
+                      schedules.removeWhere((e) => e.detailUrl == h.episodeUrl && e.ruleId == h.ruleId);
+                      schedules.add(ScheduleItem(
+                        animeTitle: h.animeTitle,
+                        detailUrl: h.episodeUrl,
+                        ruleId: h.ruleId,
+                        weekday: week,
+                        lastEpisodeTitle: h.episodeTitle,
+                      ));
+                      await _storage.saveSchedules(schedules);
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已加入追番日历')));
+                      }
+                    }
                   },
                 ),
               );

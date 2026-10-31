@@ -53,7 +53,8 @@ class AnimeRule {
 class SearchResult {
   final String title;
   final String link;
-  const SearchResult({required this.title, required this.link});
+  final AnimeRule rule;
+  const SearchResult({required this.title, required this.link, required this.rule});
 }
 
 class EpisodeItem {
@@ -61,12 +62,12 @@ class EpisodeItem {
   final String link;
   const EpisodeItem({required this.title, required this.link});
 }
-// 在文件最底部追加这个模型
+
 class HistoryItem {
   final String ruleId;
   final String ruleName;
-  final String animeTitle; // 番剧名
-  final String episodeTitle; // 剧集名
+  final String animeTitle;
+  final String episodeTitle;
   final String episodeUrl;
   final int timestamp;
 
@@ -96,4 +97,36 @@ class HistoryItem {
         episodeUrl: j['episodeUrl'] ?? '',
         timestamp: j['timestamp'] ?? 0,
       );
+}
+
+class ScheduleItem {
+  final String animeTitle;
+  final String detailUrl;
+  final String ruleId;
+  final int weekday;
+  final String lastEpisodeTitle;
+
+  ScheduleItem({
+    required this.animeTitle,
+    required this.detailUrl,
+    required this.ruleId,
+    required this.weekday,
+    required this.lastEpisodeTitle,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'animeTitle': animeTitle,
+    'detailUrl': detailUrl,
+    'ruleId': ruleId,
+    'weekday': weekday,
+    'lastEpisodeTitle': lastEpisodeTitle,
+  };
+
+  factory ScheduleItem.fromJson(Map<String, dynamic> j) => ScheduleItem(
+    animeTitle: j['animeTitle'] ?? '',
+    detailUrl: j['detailUrl'] ?? '',
+    ruleId: j['ruleId'] ?? '',
+    weekday: j['weekday'] ?? 1,
+    lastEpisodeTitle: j['lastEpisodeTitle'] ?? '',
+  );
 }

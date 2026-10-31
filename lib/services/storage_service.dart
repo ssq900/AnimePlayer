@@ -4,22 +4,18 @@ import 'package:path_provider/path_provider.dart';
 import '../models/rule.dart';
 
 class StorageService {
-  static const _fileName = 'anime_rules.json';
+  static const _rulesFileName = 'anime_rules.json';
   static const _historyFileName = 'anime_history.json';
+  static const _scheduleFileName = 'anime_schedule.json';
 
-  Future<File> _rulesFile() async {
+  Future<File> _getFile(String name) async {
     final dir = await getApplicationDocumentsDirectory();
-    return File('${dir.path}/$_fileName');
-  }
-
-  Future<File> _historyFile() async {
-    final dir = await getApplicationDocumentsDirectory();
-    return File('${dir.path}/$_historyFileName');
+    return File('${dir.path}/$name');
   }
 
   // ===== 规则存储 =====
   Future<List<AnimeRule>> loadRules() async {
-    final file = await _rulesFile();
+    final file = await _getFile(_rulesFileName);
     if (!await file.exists()) return [];
     try {
       final raw = await file.readAsString();
@@ -31,7 +27,7 @@ class StorageService {
   }
 
   Future<void> saveRules(List<AnimeRule> rules) async {
-    final file = await _rulesFile();
+    final file = await _getFile(_rulesFileName);
     await file.writeAsString(jsonEncode(rules.map((r) => r.toJson()).toList()));
   }
 
@@ -54,7 +50,7 @@ class StorageService {
 
   // ===== 历史记录存储 =====
   Future<List<HistoryItem>> loadHistory() async {
-    final file = await _historyFile();
+    final file = await _getFile(_historyFileName);
     if (!await file.exists()) return [];
     try {
       final raw = await file.readAsString();
@@ -67,17 +63,32 @@ class StorageService {
 
   Future<void> addHistory(HistoryItem item) async {
     final history = await loadHistory();
-    
-    // 移除同一个剧集，保证最新看过的在最上面
     history.removeWhere((h) => h.episodeUrl == item.episodeUrl);
     history.insert(0, item);
     
-    // 修复 Bug 3: 使用 while 循环，确保严格不超过 50 条
     while (history.length > 50) {
       history.removeLast();
     }
     
-    final file = await _historyFile();
+    final file = await _getFile(_historyFileName);
     await file.writeAsString(jsonEncode(history.map((h) => h.toJson()).toList()));
+  }
+
+  // ===== 追番日历存储 =====
+  Future<List<ScheduleItem>> loadSchedules() async {
+    final file = await _getFile(_scheduleFileName);
+    if (!await file.exists()) return [];
+    try {
+      final raw = await file.readAsString();
+      final list = jsonDecode(raw) as List<dynamic>;
+      return list.map((e) => ScheduleItem.fromJson(e as Map<String, dynamic>)).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<void> saveSchedules(List<ScheduleItem> items) async {
+    final file = await _getFile(_scheduleFileName);
+    await file.writeAsString(jsonEncode(items.map((e) => e.toJson()).toList()));
   }
 }

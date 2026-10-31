@@ -56,6 +56,7 @@ class KazumiService {
     if (css.startsWith('.') || css.startsWith('#')) return css;
 
     // 核心修复：直接删除数字索引，不再转换为不支持的 nth-of-type
+    css = css.replaceAll(RegExp(r':nth-of-type\(\d+\)'), '');
     css = css.replaceAll(RegExp(r'\[\d+\]'), '');
 
     final regClass = RegExp(r'''//\w+\[@class=["']([^"']+)["']\]''');

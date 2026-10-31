@@ -18,30 +18,37 @@ class XPathService {
           mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
           useHybridComposition: true,
         ),
+        // 核心优化：不等待完全加载，进度达到 50% 就提取，防止被慢资源卡死
+        onProgressChanged: (controller, progress) async {
+          if (progress >= 50 && !completer.isCompleted) {
+            try {
+              await Future.delayed(const Duration(milliseconds: 500));
+              final html = await controller.evaluateJavascript(source: "document.documentElement.outerHTML");
+              if (html != null && html.toString().length > 500) {
+                completer.complete(html.toString());
+              }
+            } catch (_) {}
+          }
+        },
         onLoadStop: (controller, url) async {
+          // 兜底：如果进度没到 50% 但加载完了，也提取
           if (!completer.isCompleted) {
-            await Future.delayed(const Duration(milliseconds: 800));
             try {
               final html = await controller.evaluateJavascript(source: "document.documentElement.outerHTML");
-              if (html != null) {
-                completer.complete(html.toString());
-              } else {
-                completer.completeError(Exception("获取页面源码为空"));
-              }
-            } catch (e) {
-              completer.completeError(Exception("提取HTML失败: $e"));
-            }
+              if (html != null) completer.complete(html.toString());
+            } catch (_) {}
           }
         },
         onReceivedError: (controller, request, error) {
           if (!completer.isCompleted && request.isForMainFrame == true) {
-            completer.completeError(Exception("WebView加载失败: ${error.description}"));
+            completer.completeError(Exception("加载失败: ${error.description}"));
           }
         },
       );
 
       await webView.run();
-      final result = await completer.future.timeout(const Duration(seconds: 20));
+      // 超时放宽到 30 秒
+      final result = await completer.future.timeout(const Duration(seconds: 30));
       return result;
     } catch (e) {
       throw Exception('请求异常: $e');

@@ -1,22 +1,29 @@
 import 'package:flutter/material.dart';
 import '../models/rule.dart';
-import '../services/storage_service.dart';
-import 'search_page.dart';
-import 'settings_page.dart';
+import '../services/xpath_service.dart';
 import 'player_page.dart';
 
-class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+class DetailPage extends StatefulWidget {
+  final AnimeRule rule;
+  final String detailUrl;
+  final String title;
+
+  const DetailPage({
+    super.key,
+    required this.rule,
+    required this.detailUrl,
+    required this.title,
+  });
 
   @override
-  State<HomePage> createState() => _HomePageState();
+  State<DetailPage> createState() => _DetailPageState();
 }
 
-class _HomePageState extends State<HomePage> {
-  final _storage = StorageService();
-  List<AnimeRule> _rules = [];
-  List<HistoryItem> _history = [];
-  String? _selectedId;
+class _DetailPageState extends State<DetailPage> {
+  final _service = XPathService();
+  List<EpisodeItem> _episodes = [];
+  bool _loading = true;
+  String? _error;
 
   @override
   void initState() {
@@ -25,140 +32,53 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _load() async {
-    final rules = await _storage.loadRules();
-    final history = await _storage.loadHistory();
-    if (!mounted) return;
-    
-    setState(() {
-      _rules = rules;
-      _history = history;
-      if (rules.isNotEmpty) {
-        final exists = rules.any((r) => r.id == _selectedId);
-        if (!exists) {
-          _selectedId = rules.first.id;
-        }
-      } else {
-        _selectedId = null;
-      }
-    });
+    try {
+      final eps = await _service.fetchEpisodes(widget.rule, widget.detailUrl);
+      if (!mounted) return;
+      setState(() => _episodes = eps);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = e.toString());
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Anime Aggregator'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: () async {
-              await Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const SettingsPage()),
-              );
-              _load();
-            },
-          ),
-        ],
-      ),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          if (_rules.isEmpty)
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  children: [
-                    const Text('还没有规则，请先去设置添加'),
-                    const SizedBox(height: 12),
-                    FilledButton(
-                      onPressed: () async {
-                        await Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsPage()));
-                        _load();
+      appBar: AppBar(title: Text(widget.title)),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : _error != null
+              ? Center(child: Text('加载失败：$_error'))
+              : _episodes.isEmpty
+                  ? const Center(child: Text('未提取到剧集'))
+                  : ListView.builder(
+                      itemCount: _episodes.length,
+                      itemBuilder: (_, i) {
+                        final ep = _episodes[i];
+                        return ListTile(
+                          leading: CircleAvatar(
+                            child: Text('${i + 1}'),
+                          ),
+                          title: Text(ep.title),
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => PlayerPage(
+                                  rule: widget.rule,
+                                  episodeUrl: ep.link,
+                                  title: ep.title,
+                                  animeTitle: widget.title,
+                                ),
+                              ),
+                            );
+                          },
+                        );
                       },
-                      child: const Text('去添加'),
                     ),
-                  ],
-                ),
-              ),
-            )
-          else ...[
-            DropdownButtonFormField<String>(
-              initialValue: _selectedId,
-              decoration: const InputDecoration(
-                labelText: '当前规则',
-                border: OutlineInputBorder(),
-              ),
-              items: _rules
-                  .map((r) => DropdownMenuItem(
-                        value: r.id,
-                        child: Text(r.name.isEmpty ? r.baseUrl : r.name),
-                      ))
-                  .toList(),
-              onChanged: (v) => setState(() => _selectedId = v),
-            ),
-            const SizedBox(height: 12),
-            FilledButton.icon(
-              icon: const Icon(Icons.search),
-              label: const Text('开始搜索'),
-              onPressed: _selectedId == null
-                  ? null
-                  : () async {
-                      final currentRule = _rules.firstWhere((r) => r.id == _selectedId);
-                      await Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => SearchPage(rule: currentRule),
-                        ),
-                      );
-                      _load(); 
-                    },
-            ),
-          ],
-          
-          const SizedBox(height: 32),
-          
-          if (_history.isNotEmpty) ...[
-            const Text('最近观看', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            ..._history.take(10).map((h) {
-              final targetRule = _rules.firstWhere(
-                (r) => r.id == h.ruleId || r.name == h.ruleName,
-                orElse: () => _rules.isNotEmpty ? _rules.first : AnimeRule.empty(),
-              );
-              
-              return Card(
-                child: ListTile(
-                  leading: const Icon(Icons.history),
-                  title: Text(h.animeTitle, maxLines: 1, overflow: TextOverflow.ellipsis),
-                  subtitle: Text('${h.episodeTitle} · ${h.ruleName}', maxLines: 1),
-                  trailing: const Icon(Icons.play_arrow),
-                  onTap: () {
-                    if (targetRule.name.isEmpty) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('该规则已被删除，无法继续播放')),
-                      );
-                      return;
-                    }
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => PlayerPage(
-                          rule: targetRule,
-                          episodeUrl: h.episodeUrl,
-                          title: h.episodeTitle,
-                          animeTitle: h.animeTitle,
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              );
-            }),
-          ]
-        ],
-      ),
     );
   }
 }

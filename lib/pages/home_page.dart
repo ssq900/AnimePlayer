@@ -64,7 +64,6 @@ class _HomePageState extends State<HomePage> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // ====== 搜索控制区 ======
           if (_rules.isEmpty)
             Card(
               child: Padding(
@@ -86,7 +85,7 @@ class _HomePageState extends State<HomePage> {
             )
           else ...[
             DropdownButtonFormField<String>(
-              initialValue: _selectedId, // 修复废弃警告
+              initialValue: _selectedId,
               decoration: const InputDecoration(
                 labelText: '当前规则',
                 border: OutlineInputBorder(),
@@ -120,7 +119,6 @@ class _HomePageState extends State<HomePage> {
           
           const SizedBox(height: 32),
           
-          // ====== 最近观看历史区 ======
           if (_history.isNotEmpty) ...[
             const Text('最近观看', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),

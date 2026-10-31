@@ -1,4 +1,5 @@
-import 'dart:convert'; // 必须引入
+import 'dart:convert';
+import 'dart:io'; // 必须引入，用于 SocketException
 import 'package:html/parser.dart' as html_parser;
 import 'package:html/dom.dart';
 import 'package:http/http.dart' as http;
@@ -25,12 +26,16 @@ class XPathService {
       ).timeout(const Duration(seconds: 15));
 
       if (resp.statusCode != 200) {
-        throw Exception('HTTP ${resp.statusCode}');
+        throw Exception('HTTP 状态码错误: ${resp.statusCode}');
       }
       
       return _decodeHtml(resp);
+    } on SocketException catch (_) {
+      throw Exception('DNS解析失败或网络不可用，请检查网络状态、尝试更换DNS或开启VPN全局模式。');
+    } on HandshakeException catch (_) {
+      throw Exception('TLS安全握手失败，可能是源站证书异常或当前系统版本过低不支持。');
     } catch (e) {
-      throw Exception('网络请求失败，可能被墙或目标网站拦截。\n详情: $e');
+      throw Exception('网络请求异常: $e');
     }
   }
 

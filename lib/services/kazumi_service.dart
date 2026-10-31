@@ -2,24 +2,22 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 class KazumiService {
-  // GitCode 国内镜像的索引文件地址（截图推荐）
-  static const String _indexUrl =
-      'https://raw.gitcode.com/gh_mirrors/ka/KazumiRules/raw/main/index.json';
-
-  // 备用索引地址
-  static const List<String> _fallbackIndexUrls = [
+  static const List<String> _indexUrls = [
+    'https://raw.gitcode.com/gh_mirrors/ka/KazumiRules/raw/main/index.json',
     'https://ghproxy.net/https://raw.githubusercontent.com/Predidit/KazumiRules/main/index.json',
     'https://cdn.jsdelivr.net/gh/Predidit/KazumiRules@main/index.json',
   ];
 
-  /// 拉取规则索引列表
-  Future<List<Map<String, dynamic>>> fetchRuleIndex() async {
-    final urls = [_indexUrl, ..._fallbackIndexUrls];
-    dynamic lastError;
+  static const Map<String, String> _headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/plain, */*',
+  };
 
-    for (final url in urls) {
+  Future<List<Map<String, dynamic>>> fetchRuleIndex() async {
+    dynamic lastError;
+    for (final url in _indexUrls) {
       try {
-        final resp = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 10));
+        final resp = await http.get(Uri.parse(url), headers: _headers).timeout(const Duration(seconds: 10));
         if (resp.statusCode == 200) {
           final List<dynamic> data = jsonDecode(resp.body);
           return data.cast<Map<String, dynamic>>();
@@ -28,10 +26,9 @@ class KazumiService {
         lastError = e;
       }
     }
-    throw Exception('索引拉取失败: $lastError');
+    throw Exception('索引拉取失败，请检查网络: $lastError');
   }
 
-  /// 根据索引中的文件名，下载完整的规则 JSON
   Future<Map<String, dynamic>> fetchRuleDetail(String fileName) async {
     final urls = [
       'https://raw.gitcode.com/gh_mirrors/ka/KazumiRules/raw/main/$fileName',
@@ -42,7 +39,7 @@ class KazumiService {
 
     for (final url in urls) {
       try {
-        final resp = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 10));
+        final resp = await http.get(Uri.parse(url), headers: _headers).timeout(const Duration(seconds: 10));
         if (resp.statusCode == 200) {
           return jsonDecode(resp.body) as Map<String, dynamic>;
         }
@@ -53,7 +50,6 @@ class KazumiService {
     throw Exception('规则详情拉取失败: $lastError');
   }
 
-  // ========== 以下为已有的转换逻辑，保持不变 ==========
   String _xpathToCss(String xpath) {
     if (xpath.isEmpty) return '';
     String css = xpath.trim();

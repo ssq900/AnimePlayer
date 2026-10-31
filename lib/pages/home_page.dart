@@ -3,7 +3,6 @@ import '../models/rule.dart';
 import '../services/storage_service.dart';
 import 'search_page.dart';
 import 'settings_page.dart';
-import 'rule_edit_page.dart';
 import 'player_page.dart';
 
 class HomePage extends StatefulWidget {
@@ -87,7 +86,7 @@ class _HomePageState extends State<HomePage> {
             )
           else ...[
             DropdownButtonFormField<String>(
-              value: _selectedId,
+              initialValue: _selectedId, // 修复废弃警告
               decoration: const InputDecoration(
                 labelText: '当前规则',
                 border: OutlineInputBorder(),
@@ -114,7 +113,7 @@ class _HomePageState extends State<HomePage> {
                           builder: (_) => SearchPage(rule: currentRule),
                         ),
                       );
-                      _load(); // 从搜索页回来时刷新历史
+                      _load(); 
                     },
             ),
           ],
@@ -126,7 +125,6 @@ class _HomePageState extends State<HomePage> {
             const Text('最近观看', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
             ..._history.take(10).map((h) {
-              // 查找这条记录对应的规则是否还存在
               final targetRule = _rules.firstWhere(
                 (r) => r.id == h.ruleId || r.name == h.ruleName,
                 orElse: () => _rules.isNotEmpty ? _rules.first : AnimeRule.empty(),

@@ -68,13 +68,15 @@ class _PlayerPageState extends State<PlayerPage> {
     if (data != null) {
       try {
         final List<dynamic> list = jsonDecode(data);
-        setState(() {
-          _danmakus = list.map((e) => DanmakuItem(
-            text: e['text'],
-            time: Duration(milliseconds: e['time']),
-            color: Colors.white,
-          )).toList();
-        });
+        if (mounted) {
+          setState(() {
+            _danmakus = list.map((e) => DanmakuItem(
+              text: e['text'],
+              time: Duration(milliseconds: e['time']),
+              color: Colors.white,
+            )).toList();
+          });
+        }
       } catch (_) {}
     }
   }
@@ -82,7 +84,6 @@ class _PlayerPageState extends State<PlayerPage> {
   Future<void> _saveDanmakus() async {
     final prefs = await SharedPreferences.getInstance();
     final key = 'danmaku_${widget.episodeUrl.hashCode}';
-    // 按时间排序后保存
     _danmakus.sort((a, b) => a.time.compareTo(b.time));
     final list = _danmakus.map((e) => {'text': e.text, 'time': e.time.inMilliseconds}).toList();
     await prefs.setString(key, jsonEncode(list));
@@ -102,10 +103,9 @@ class _PlayerPageState extends State<PlayerPage> {
     });
 
     await _saveDanmakus();
-    FocusScope.of(context).unfocus();
+    if (mounted) FocusScope.of(context).unfocus();
   }
 
-  // 导入外部弹幕文件
   Future<void> _importDanmaku() async {
     try {
       FilePickerResult? result = await FilePicker.platform.pickFiles(
@@ -116,15 +116,19 @@ class _PlayerPageState extends State<PlayerPage> {
       if (result == null || result.files.single.path == null) return;
 
       final file = File(result.files.single.path!);
+      
+      // 安全校验：限制弹幕文件最大 10MB，防止恶意大文件导致 OOM
+      if (await file.length() > 10 * 1024 * 1024) {
+        throw Exception('文件过大，最大支持 10MB');
+      }
+
       final content = await file.readAsString();
       
-      // 解析 JSON 格式：[{"time": 10.5, "text": "哈哈哈"}]
       final List<dynamic> data = jsonDecode(content);
       int importCount = 0;
 
       for (var item in data) {
         if (item['time'] != null && item['text'] != null) {
-          // 兼容秒或毫秒
           int ms = (item['time'] is double) 
               ? (item['time'] * 1000).toInt() 
               : (item['time'] as num).toInt();
@@ -139,6 +143,7 @@ class _PlayerPageState extends State<PlayerPage> {
 
       await _saveDanmakus();
       if (mounted) {
+        setState(() {}); // 刷新弹幕渲染
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('成功导入 $importCount 条弹幕！')),
         );
@@ -146,7 +151,7 @@ class _PlayerPageState extends State<PlayerPage> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('导入失败，请检查文件格式: $e'), backgroundColor: Colors.red),
+          SnackBar(content: Text('导入失败: $e'), backgroundColor: Colors.red),
         );
       }
     }
@@ -171,11 +176,18 @@ class _PlayerPageState extends State<PlayerPage> {
 
       if (_isDirectVideo(url)) {
         final c = VideoPlayerController.networkUrl(Uri.parse(url));
-        await c.initialize();
+        try {
+          await c.initialize(); // 捕获初始化时的原生错误（格式不支持、TLS错误等）
+        } catch (initError) {
+          await c.dispose();
+          throw Exception('内置播放器无法解析该视频源，请尝试外部打开。错误: $initError');
+        }
+
         if (!mounted) {
           await c.dispose();
           return;
         }
+        
         setState(() => _controller = c);
         c.setPlaybackSpeed(_playbackSpeed);
         c.play();
@@ -188,7 +200,7 @@ class _PlayerPageState extends State<PlayerPage> {
       if (mounted) {
         setState(() {
           _error = e.toString();
-          _resolvedUrl = null;
+          // 保留 URL，以便用户点击外部打开
         });
       }
     } finally {
@@ -214,6 +226,23 @@ class _PlayerPageState extends State<PlayerPage> {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setDouble('playback_speed', speed);
     }
+  }
+
+  void _startSleepTimer(int minutes) {
+    _sleepTimer?.cancel();
+    setState(() => _sleepMinutesRemaining = minutes);
+    _sleepTimer = Timer.periodic(const Duration(minutes: 1), (timer) {
+      if (_sleepMinutesRemaining <= 1) {
+        timer.cancel();
+        _controller?.pause();
+        if (mounted) {
+          setState(() => _sleepMinutesRemaining = 0);
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('定时关闭已生效，视频已暂停')));
+        }
+      } else {
+        if (mounted) setState(() => _sleepMinutesRemaining--);
+      }
+    });
   }
 
   @override
@@ -279,11 +308,11 @@ class _PlayerPageState extends State<PlayerPage> {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Text('解析失败：$_error', style: const TextStyle(color: Colors.white)),
+                        Text('解析失败：$_error', style: const TextStyle(color: Colors.white), textAlign: TextAlign.center),
                         const SizedBox(height: 16),
                         FilledButton(
                           onPressed: () => _openExternal(_resolvedUrl ?? widget.episodeUrl),
-                          child: const Text('用外部浏览器打开'),
+                          child: const Text('尝试用外部浏览器打开'),
                         ),
                       ],
                     ),
@@ -305,23 +334,6 @@ class _PlayerPageState extends State<PlayerPage> {
                       ),
       ),
     );
-  }
-
-  void _startSleepTimer(int minutes) {
-    _sleepTimer?.cancel();
-    setState(() => _sleepMinutesRemaining = minutes);
-    _sleepTimer = Timer.periodic(const Duration(minutes: 1), (timer) {
-      if (_sleepMinutesRemaining <= 1) {
-        timer.cancel();
-        _controller?.pause();
-        if (mounted) {
-          setState(() => _sleepMinutesRemaining = 0);
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('定时关闭已生效，视频已暂停')));
-        }
-      } else {
-        if (mounted) setState(() => _sleepMinutesRemaining--);
-      }
-    });
   }
 
   Widget _buildVideoPlayer() {

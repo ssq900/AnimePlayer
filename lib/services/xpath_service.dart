@@ -6,6 +6,11 @@ import '../models/rule.dart';
 
 class XPathService {
   Future<String> fetchHtml(String url) async {
+    // 安全拦截：只允许 HTTP/HTTPS
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      throw Exception('非法的协议请求');
+    }
+
     final completer = Completer<String>();
     HeadlessInAppWebView? webView;
 
@@ -14,17 +19,20 @@ class XPathService {
         initialUrlRequest: URLRequest(url: WebUri(url)),
         initialSettings: InAppWebViewSettings(
           javaScriptEnabled: true,
-          userAgent: "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+          // 移除写死的 Chrome 120，使用空值让系统 WebView 自己决定
           mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
-          useHybridComposition: true,
         ),
         onProgressChanged: (controller, progress) async {
           if (progress >= 50 && !completer.isCompleted) {
             try {
+              // 延迟 500ms 等待异步渲染
               await Future.delayed(const Duration(milliseconds: 500));
-              final html = await controller.evaluateJavascript(source: "document.documentElement.outerHTML");
-              if (html != null && html.toString().length > 500) {
-                completer.complete(html.toString());
+              // 核心修复：延迟结束后必须再次检查是否已由 onLoadStop 完成
+              if (!completer.isCompleted) {
+                final html = await controller.evaluateJavascript(source: "document.documentElement.outerHTML");
+                if (html != null && html.toString().length > 500) {
+                  completer.complete(html.toString());
+                }
               }
             } catch (_) {}
           }
@@ -33,7 +41,9 @@ class XPathService {
           if (!completer.isCompleted) {
             try {
               final html = await controller.evaluateJavascript(source: "document.documentElement.outerHTML");
-              if (html != null) completer.complete(html.toString());
+              if (html != null && !completer.isCompleted) {
+                completer.complete(html.toString());
+              }
             } catch (_) {}
           }
         },
@@ -45,13 +55,16 @@ class XPathService {
       );
 
       await webView.run();
-      final result = await completer.future.timeout(const Duration(seconds: 30));
-      return result;
+      return await completer.future.timeout(const Duration(seconds: 30));
     } catch (e) {
       throw Exception('请求异常: $e');
     } finally {
       if (webView != null) {
-        await webView.dispose();
+        try {
+          await webView.dispose();
+        } catch (_) {
+          // 忽略 dispose 异常，防止掩盖原始错误
+        }
       }
     }
   }
@@ -73,18 +86,15 @@ class XPathService {
     final htmlText = await fetchHtml(searchUrl);
     final doc = _parse(htmlText);
     final container = doc.querySelector(rule.searchSelector);
-    
     if (container == null) return [];
 
     final String itemSelector = rule.animeLinkSelector.trim().isEmpty ? '*' : rule.animeLinkSelector;
     List<Element> items = [];
     
     try {
-      // 修复：使用 matchesSelector 而不是 matches
       if (container.matchesSelector(itemSelector)) {
         items = [container];
       } else {
-        // 修复：显式转换为 List<Element>
         items = container.querySelectorAll(itemSelector).cast<Element>();
       }
     } catch (_) {
@@ -95,7 +105,6 @@ class XPathService {
       final anchor = el.localName == 'a' ? el : el.querySelector('a');
       final title = _cleanText(anchor?.attributes['title'] ?? anchor?.text ?? el.text);
       final href = anchor?.attributes['href'] ?? '';
-      // 修复：传入 rule 参数
       return SearchResult(title: title, link: _absolute(rule.baseUrl, href), rule: rule);
     }).where((r) => r.link.isNotEmpty && r.title.isNotEmpty).toList();
   }
@@ -129,9 +138,15 @@ class XPathService {
   String _absolute(String baseUrl, String href) {
     if (href.isEmpty) return '';
     try {
-      return Uri.parse(baseUrl).resolve(href).toString();
+      final resolved = Uri.parse(baseUrl).resolve(href).toString();
+      // 安全校验：防止 javascript: 伪协议注入
+      final scheme = Uri.parse(resolved).scheme.toLowerCase();
+      if (scheme != 'http' && scheme != 'https') {
+        return '';
+      }
+      return resolved;
     } catch (_) {
-      return href;
+      return '';
     }
   }
 

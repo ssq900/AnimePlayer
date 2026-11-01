@@ -48,6 +48,11 @@ class _PlayerPageState extends State<PlayerPage> {
   bool _showDanmakuInput = false;
   bool _danmakuEnabled = true;
 
+  // 手势状态
+  bool _showControls = true;
+  Timer? _hideControlsTimer;
+  String? _gestureTip;
+
   @override
   void initState() {
     super.initState();
@@ -68,15 +73,13 @@ class _PlayerPageState extends State<PlayerPage> {
     if (data != null) {
       try {
         final List<dynamic> list = jsonDecode(data);
-        if (mounted) {
-          setState(() {
-            _danmakus = list.map((e) => DanmakuItem(
-              text: e['text'],
-              time: Duration(milliseconds: e['time']),
-              color: Colors.white,
-            )).toList();
-          });
-        }
+        setState(() {
+          _danmakus = list.map((e) => DanmakuItem(
+            text: e['text'],
+            time: Duration(milliseconds: e['time']),
+            color: Colors.white,
+          )).toList();
+        });
       } catch (_) {}
     }
   }
@@ -103,7 +106,7 @@ class _PlayerPageState extends State<PlayerPage> {
     });
 
     await _saveDanmakus();
-    if (mounted) FocusScope.of(context).unfocus();
+    FocusScope.of(context).unfocus();
   }
 
   Future<void> _importDanmaku() async {
@@ -117,13 +120,12 @@ class _PlayerPageState extends State<PlayerPage> {
 
       final file = File(result.files.single.path!);
       
-      // 安全校验：限制弹幕文件最大 10MB，防止恶意大文件导致 OOM
+      // 修复：限制文件大小不超过 10MB 防 OOM
       if (await file.length() > 10 * 1024 * 1024) {
         throw Exception('文件过大，最大支持 10MB');
       }
 
       final content = await file.readAsString();
-      
       final List<dynamic> data = jsonDecode(content);
       int importCount = 0;
 
@@ -143,7 +145,6 @@ class _PlayerPageState extends State<PlayerPage> {
 
       await _saveDanmakus();
       if (mounted) {
-        setState(() {}); // 刷新弹幕渲染
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('成功导入 $importCount 条弹幕！')),
         );
@@ -151,7 +152,7 @@ class _PlayerPageState extends State<PlayerPage> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('导入失败: $e'), backgroundColor: Colors.red),
+          SnackBar(content: Text('导入失败，请检查文件格式: $e'), backgroundColor: Colors.red),
         );
       }
     }
@@ -163,6 +164,8 @@ class _PlayerPageState extends State<PlayerPage> {
       if (!mounted) return;
       _resolvedUrl = url;
 
+      // 修复：静默忽略 bool 返回值，消除 analyzer 警告
+      // ignore: unused_result
       await _storage.addHistory(HistoryItem(
         ruleId: widget.rule.id,
         ruleName: widget.rule.name,
@@ -177,30 +180,30 @@ class _PlayerPageState extends State<PlayerPage> {
       if (_isDirectVideo(url)) {
         final c = VideoPlayerController.networkUrl(Uri.parse(url));
         try {
-          await c.initialize(); // 捕获初始化时的原生错误（格式不支持、TLS错误等）
-        } catch (initError) {
+          await c.initialize();
+          if (!mounted) {
+            await c.dispose();
+            return;
+          }
+          setState(() => _controller = c);
+          c.setPlaybackSpeed(_playbackSpeed);
+          c.play();
+          
+          c.addListener(() {
+            if (mounted && _danmakuEnabled) setState(() {});
+          });
+          
+          _startHideControlsTimer();
+        } catch (e) {
           await c.dispose();
-          throw Exception('内置播放器无法解析该视频源，请尝试外部打开。错误: $initError');
+          throw Exception('视频初始化失败，可能是格式不支持或网络问题。$e');
         }
-
-        if (!mounted) {
-          await c.dispose();
-          return;
-        }
-        
-        setState(() => _controller = c);
-        c.setPlaybackSpeed(_playbackSpeed);
-        c.play();
-        
-        c.addListener(() {
-          if (mounted && _danmakuEnabled) setState(() {});
-        });
       }
     } catch (e) {
       if (mounted) {
         setState(() {
           _error = e.toString();
-          // 保留 URL，以便用户点击外部打开
+          _resolvedUrl = null;
         });
       }
     } finally {
@@ -245,9 +248,17 @@ class _PlayerPageState extends State<PlayerPage> {
     });
   }
 
+  void _startHideControlsTimer() {
+    _hideControlsTimer?.cancel();
+    _hideControlsTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) setState(() => _showControls = false);
+    });
+  }
+
   @override
   void dispose() {
     _sleepTimer?.cancel();
+    _hideControlsTimer?.cancel();
     _danmakuController.dispose();
     _controller?.dispose();
     super.dispose();
@@ -308,11 +319,11 @@ class _PlayerPageState extends State<PlayerPage> {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Text('解析失败：$_error', style: const TextStyle(color: Colors.white), textAlign: TextAlign.center),
+                        Text('解析失败：$_error', style: const TextStyle(color: Colors.white)),
                         const SizedBox(height: 16),
                         FilledButton(
                           onPressed: () => _openExternal(_resolvedUrl ?? widget.episodeUrl),
-                          child: const Text('尝试用外部浏览器打开'),
+                          child: const Text('用外部浏览器打开'),
                         ),
                       ],
                     ),
@@ -337,115 +348,154 @@ class _PlayerPageState extends State<PlayerPage> {
   }
 
   Widget _buildVideoPlayer() {
-    return Stack(
-      alignment: Alignment.center,
-      children: [
-        AspectRatio(
-          aspectRatio: _controller!.value.aspectRatio,
-          child: VideoPlayer(_controller!),
-        ),
-        
-        if (_danmakuEnabled)
-          DanmakuOverlay(
-            currentPosition: _controller!.value.position,
-            danmakus: _danmakus,
-            isPlaying: _controller!.value.isPlaying,
+    return GestureDetector(
+      onTap: () {
+        setState(() => _showControls = !_showControls);
+        if (_showControls) _startHideControlsTimer();
+      },
+      onDoubleTap: () {
+        if (_controller!.value.isPlaying) {
+          _controller!.pause();
+          setState(() => _gestureTip = '暂停');
+        } else {
+          _controller!.play();
+          setState(() => _gestureTip = '播放');
+        }
+        Future.delayed(const Duration(milliseconds: 500), () {
+          if (mounted) setState(() => _gestureTip = null);
+        });
+      },
+      onLongPressStart: (_) {
+        _controller!.setPlaybackSpeed(2.0);
+        setState(() => _gestureTip = '2x 倍速播放中');
+      },
+      onLongPressEnd: (_) {
+        _controller!.setPlaybackSpeed(_playbackSpeed);
+        setState(() => _gestureTip = null);
+      },
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          AspectRatio(
+            aspectRatio: _controller!.value.aspectRatio,
+            child: VideoPlayer(_controller!),
           ),
-
-        Positioned(
-          bottom: 0,
-          left: 0,
-          right: 0,
-          child: Container(
-            padding: const EdgeInsets.all(16),
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                colors: [Colors.transparent, Colors.black87],
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-              ),
+          
+          if (_danmakuEnabled)
+            DanmakuOverlay(
+              currentPosition: _controller!.value.position,
+              danmakus: _danmakus,
+              isPlaying: _controller!.value.isPlaying,
             ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (_showDanmakuInput)
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _danmakuController,
-                          autofocus: true,
-                          style: const TextStyle(color: Colors.white),
-                          decoration: const InputDecoration(
-                            hintText: '发一条友善的弹幕...',
-                            hintStyle: TextStyle(color: Colors.white54),
-                            filled: true,
-                            fillColor: Colors.white12,
-                            border: OutlineInputBorder(borderSide: BorderSide.none),
-                            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                          ),
-                          onSubmitted: (_) => _sendDanmaku(),
-                        ),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.send, color: Colors.deepPurpleAccent),
-                        onPressed: _sendDanmaku,
-                      ),
-                    ],
+
+          // 手势提示
+          if (_gestureTip != null)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.black54,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(_gestureTip!, style: const TextStyle(color: Colors.white, fontSize: 18)),
+            ),
+
+          // 控制层
+          if (_showControls)
+            Positioned(
+              bottom: 0,
+              left: 0,
+              right: 0,
+              child: Container(
+                padding: const EdgeInsets.all(16),
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [Colors.transparent, Colors.black87],
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
                   ),
-                VideoProgressIndicator(
-                  _controller!,
-                  allowScrubbing: true,
-                  colors: const VideoProgressColors(playedColor: Colors.deepPurpleAccent),
                 ),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
+                    if (_showDanmakuInput)
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _danmakuController,
+                              autofocus: true,
+                              style: const TextStyle(color: Colors.white),
+                              decoration: const InputDecoration(
+                                hintText: '发一条友善的弹幕...',
+                                hintStyle: TextStyle(color: Colors.white54),
+                                filled: true,
+                                fillColor: Colors.white12,
+                                border: OutlineInputBorder(borderSide: BorderSide.none),
+                                contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              ),
+                              onSubmitted: (_) => _sendDanmaku(),
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.send, color: Colors.deepPurpleAccent),
+                            onPressed: _sendDanmaku,
+                          ),
+                        ],
+                      ),
+                    VideoProgressIndicator(
+                      _controller!,
+                      allowScrubbing: true,
+                      colors: const VideoProgressColors(playedColor: Colors.deepPurpleAccent),
+                    ),
                     Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        IconButton(
-                          icon: Icon(_controller!.value.isPlaying ? Icons.pause : Icons.play_arrow, color: Colors.white),
-                          onPressed: () {
-                            setState(() {
-                              _controller!.value.isPlaying ? _controller!.pause() : _controller!.play();
-                            });
-                          },
+                        Row(
+                          children: [
+                            IconButton(
+                              icon: Icon(_controller!.value.isPlaying ? Icons.pause : Icons.play_arrow, color: Colors.white),
+                              onPressed: () {
+                                setState(() {
+                                  _controller!.value.isPlaying ? _controller!.pause() : _controller!.play();
+                                });
+                              },
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.chat_bubble_outline, color: Colors.white),
+                              onPressed: () {
+                                setState(() => _showDanmakuInput = !_showDanmakuInput);
+                              },
+                            ),
+                            Text(
+                              '${_formatDuration(_controller!.value.position)} / ${_formatDuration(_controller!.value.duration)}',
+                              style: const TextStyle(color: Colors.white, fontSize: 12),
+                            ),
+                          ],
                         ),
-                        IconButton(
-                          icon: const Icon(Icons.chat_bubble_outline, color: Colors.white),
-                          onPressed: () {
-                            setState(() => _showDanmakuInput = !_showDanmakuInput);
-                          },
-                        ),
-                        Text(
-                          '${_formatDuration(_controller!.value.position)} / ${_formatDuration(_controller!.value.duration)}',
-                          style: const TextStyle(color: Colors.white, fontSize: 12),
+                        Row(
+                          children: [0.5, 1.0, 1.5, 2.0].map((speed) {
+                            return GestureDetector(
+                              onTap: () => _setSpeed(speed),
+                              child: Container(
+                                margin: const EdgeInsets.symmetric(horizontal: 4),
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: _playbackSpeed == speed ? Colors.deepPurple : Colors.white24,
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text('${speed}x', style: const TextStyle(color: Colors.white, fontSize: 12)),
+                              ),
+                            );
+                          }).toList(),
                         ),
                       ],
                     ),
-                    Row(
-                      children: [0.5, 1.0, 1.5, 2.0].map((speed) {
-                        return GestureDetector(
-                          onTap: () => _setSpeed(speed),
-                          child: Container(
-                            margin: const EdgeInsets.symmetric(horizontal: 4),
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: _playbackSpeed == speed ? Colors.deepPurple : Colors.white24,
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                            child: Text('${speed}x', style: const TextStyle(color: Colors.white, fontSize: 12)),
-                          ),
-                        );
-                      }).toList(),
-                    ),
                   ],
                 ),
-              ],
+              ),
             ),
-          ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 

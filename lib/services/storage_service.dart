@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:synchronized/synchronized.dart';
+import 'package:flutter/foundation.dart';
 import '../models/rule.dart';
 
 class StorageService {
@@ -9,7 +10,6 @@ class StorageService {
   static const _historyFileName = 'anime_history.json';
   static const _scheduleFileName = 'anime_schedule.json';
 
-  // 核心修复：引入全局锁，防止多线程并发读写导致文件损坏
   static final _lock = Lock();
 
   Future<File> _getFile(String name) async {
@@ -18,7 +18,7 @@ class StorageService {
   }
 
   // ===== 规则存储 =====
-  Future<List<AnimeRule>> loadRules() async {
+  Future<List<AnimeRule>> _loadRulesUnsafe() async {
     try {
       final file = await _getFile(_rulesFileName);
       if (!await file.exists()) return [];
@@ -32,50 +32,60 @@ class StorageService {
     }
   }
 
-  Future<void> saveRules(List<AnimeRule> rules) async {
-    await _lock.synchronized(() async {
+  Future<List<AnimeRule>> loadRules() async {
+    return await _lock.synchronized(() => _loadRulesUnsafe());
+  }
+
+  Future<bool> saveRules(List<AnimeRule> rules) async {
+    return await _lock.synchronized(() async {
       try {
         final file = await _getFile(_rulesFileName);
         await file.writeAsString(jsonEncode(rules.map((r) => r.toJson()).toList()));
+        return true;
       } catch (e) {
         debugPrint('保存规则失败: $e');
+        return false;
       }
     });
   }
 
-  Future<void> upsertRule(AnimeRule rule) async {
-    await _lock.synchronized(() async {
-      final rules = await loadRules();
-      final idx = rules.indexWhere((r) => r.id == rule.id);
-      if (idx >= 0) {
-        rules[idx] = rule;
-      } else {
-        rules.add(rule);
-      }
+  Future<bool> upsertRule(AnimeRule rule) async {
+    return await _lock.synchronized(() async {
       try {
+        final rules = await _loadRulesUnsafe(); // 使用无锁方法防死锁
+        final idx = rules.indexWhere((r) => r.id == rule.id);
+        if (idx >= 0) {
+          rules[idx] = rule;
+        } else {
+          rules.add(rule);
+        }
         final file = await _getFile(_rulesFileName);
         await file.writeAsString(jsonEncode(rules.map((r) => r.toJson()).toList()));
+        return true;
       } catch (e) {
         debugPrint('更新规则失败: $e');
+        return false;
       }
     });
   }
 
-  Future<void> deleteRule(String id) async {
-    await _lock.synchronized(() async {
-      final rules = await loadRules();
-      rules.removeWhere((r) => r.id == id);
+  Future<bool> deleteRule(String id) async {
+    return await _lock.synchronized(() async {
       try {
+        final rules = await _loadRulesUnsafe();
+        rules.removeWhere((r) => r.id == id);
         final file = await _getFile(_rulesFileName);
         await file.writeAsString(jsonEncode(rules.map((r) => r.toJson()).toList()));
+        return true;
       } catch (e) {
         debugPrint('删除规则失败: $e');
+        return false;
       }
     });
   }
 
   // ===== 历史记录存储 =====
-  Future<List<HistoryItem>> loadHistory() async {
+  Future<List<HistoryItem>> _loadHistoryUnsafe() async {
     try {
       final file = await _getFile(_historyFileName);
       if (!await file.exists()) return [];
@@ -89,27 +99,33 @@ class StorageService {
     }
   }
 
-  Future<void> addHistory(HistoryItem item) async {
-    await _lock.synchronized(() async {
-      final history = await loadHistory();
-      history.removeWhere((h) => h.episodeUrl == item.episodeUrl);
-      history.insert(0, item);
-      
-      while (history.length > 50) {
-        history.removeLast();
-      }
-      
+  Future<List<HistoryItem>> loadHistory() async {
+    return await _lock.synchronized(() => _loadHistoryUnsafe());
+  }
+
+  Future<bool> addHistory(HistoryItem item) async {
+    return await _lock.synchronized(() async {
       try {
+        final history = await _loadHistoryUnsafe();
+        history.removeWhere((h) => h.episodeUrl == item.episodeUrl);
+        history.insert(0, item);
+        
+        while (history.length > 50) {
+          history.removeLast();
+        }
+        
         final file = await _getFile(_historyFileName);
         await file.writeAsString(jsonEncode(history.map((h) => h.toJson()).toList()));
+        return true;
       } catch (e) {
         debugPrint('保存历史失败: $e');
+        return false;
       }
     });
   }
 
   // ===== 追番日历存储 =====
-  Future<List<ScheduleItem>> loadSchedules() async {
+  Future<List<ScheduleItem>> _loadSchedulesUnsafe() async {
     try {
       final file = await _getFile(_scheduleFileName);
       if (!await file.exists()) return [];
@@ -123,20 +139,20 @@ class StorageService {
     }
   }
 
-  Future<void> saveSchedules(List<ScheduleItem> items) async {
-    await _lock.synchronized(() async {
+  Future<List<ScheduleItem>> loadSchedules() async {
+    return await _lock.synchronized(() => _loadSchedulesUnsafe());
+  }
+
+  Future<bool> saveSchedules(List<ScheduleItem> items) async {
+    return await _lock.synchronized(() async {
       try {
         final file = await _getFile(_scheduleFileName);
         await file.writeAsString(jsonEncode(items.map((e) => e.toJson()).toList()));
+        return true;
       } catch (e) {
         debugPrint('保存日历失败: $e');
+        return false;
       }
     });
   }
-}
-
-// 简单的日志打印工具，避免导入flutter/material.dart导致其他纯Dart文件报错
-void debugPrint(String message) {
-  // 调试时可打开下面这行，发布时无需改动
-  // print('[StorageService] $message');
 }

@@ -57,8 +57,18 @@ class _RuleEditPageState extends State<RuleEditPage> {
       );
       return;
     }
-    await _storage.upsertRule(rule);
-    if (mounted) Navigator.pop(context);
+    
+    // 核心修复：处理保存结果
+    final success = await _storage.upsertRule(rule);
+    if (success) {
+      if (mounted) Navigator.pop(context);
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('保存规则失败，请检查磁盘空间'), backgroundColor: Colors.red),
+        );
+      }
+    }
   }
 
   @override

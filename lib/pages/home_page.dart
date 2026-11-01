@@ -5,7 +5,7 @@ import 'search_page.dart';
 import 'settings_page.dart';
 import 'player_page.dart';
 import 'schedule_page.dart';
-import 'stats_page.dart'; // 引入刚写的统计页面
+import 'stats_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -62,7 +62,6 @@ class _HomePageState extends State<HomePage> {
       appBar: AppBar(
         title: const Text('Anime Aggregator'),
         actions: [
-          // 统计入口
           IconButton(
             icon: const Icon(Icons.bar_chart),
             tooltip: '观看统计',
@@ -70,7 +69,6 @@ class _HomePageState extends State<HomePage> {
               Navigator.push(context, MaterialPageRoute(builder: (_) => const StatsPage()));
             },
           ),
-          // 日历入口
           IconButton(
             icon: const Icon(Icons.calendar_month),
             tooltip: '追番日历',
@@ -78,7 +76,6 @@ class _HomePageState extends State<HomePage> {
               Navigator.push(context, MaterialPageRoute(builder: (_) => SchedulePage(rules: _rules)));
             },
           ),
-          // 设置入口
           IconButton(
             icon: const Icon(Icons.settings),
             onPressed: () async {
@@ -94,7 +91,6 @@ class _HomePageState extends State<HomePage> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // 搜索框
           TextField(
             controller: _searchController,
             textInputAction: TextInputAction.search,
@@ -119,7 +115,6 @@ class _HomePageState extends State<HomePage> {
           
           const SizedBox(height: 32),
           
-          // 最近观看历史区
           if (_history.isNotEmpty) ...[
             const Text('最近观看 (长按加入日历)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
@@ -155,7 +150,6 @@ class _HomePageState extends State<HomePage> {
                     ).then((_) => _load());
                   },
                   onLongPress: () async {
-                    // 长按加入追番日历
                     final week = await showDialog<int>(
                       context: context,
                       builder: (ctx) => AlertDialog(
@@ -180,9 +174,13 @@ class _HomePageState extends State<HomePage> {
                         weekday: week,
                         lastEpisodeTitle: h.episodeTitle,
                       ));
-                      await _storage.saveSchedules(schedules);
+                      
+                      // 核心修复：处理保存结果
+                      final success = await _storage.saveSchedules(schedules);
                       if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已加入追番日历')));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text(success ? '已加入追番日历' : '保存失败，请检查磁盘空间')),
+                        );
                       }
                     }
                   },

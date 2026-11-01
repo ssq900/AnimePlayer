@@ -6,7 +6,7 @@ import '../services/kazumi_service.dart';
 import '../services/sync_service.dart';
 import 'rule_edit_page.dart';
 import 'debugger_page.dart';
-import '../services/xpath_service.dart'; // 用于测活
+import '../services/xpath_service.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -19,16 +19,14 @@ class _SettingsPageState extends State<SettingsPage> {
   final _storage = StorageService();
   List<AnimeRule> _rules = [];
 
-  // WebDAV 配置控制器
   final _urlController = TextEditingController();
   final _userController = TextEditingController();
   final _passController = TextEditingController();
   bool _syncing = false;
   bool _obscurePass = true;
 
-  // 健康检查状态
-  Map<String, bool> _healthStatus = {}; // ruleId -> 是否存活
-  Map<String, bool> _checkingStatus = {}; // ruleId -> 是否正在检查
+  Map<String, bool> _healthStatus = {};
+  Map<String, bool> _checkingStatus = {};
   bool _checkingAll = false;
 
   @override
@@ -99,12 +97,10 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
-  // 测活逻辑
   Future<void> _checkRuleHealth(AnimeRule rule) async {
     setState(() => _checkingStatus[rule.id] = true);
     try {
       final xpath = XPathService();
-      // 直接请求 baseUrl 主页作为测试（比全量搜索快且省内存）
       final url = rule.baseUrl.replaceAll('{keyword}', '');
       await xpath.fetchHtml(url);
       if (mounted) setState(() => _healthStatus[rule.id] = true);
@@ -121,7 +117,6 @@ class _SettingsPageState extends State<SettingsPage> {
       _healthStatus.clear();
     });
     
-    // 串行检测防止 WebView 崩溃
     for (var rule in _rules) {
       await _checkRuleHealth(rule);
     }
@@ -129,7 +124,6 @@ class _SettingsPageState extends State<SettingsPage> {
     if (mounted) setState(() => _checkingAll = false);
   }
 
-  // 一键拉取规则弹窗 (原版逻辑补全)
   Future<void> _showKazumiRules() async {
     showDialog(
       context: context,
@@ -224,12 +218,17 @@ class _SettingsPageState extends State<SettingsPage> {
         episodeLinkSelector: converted['episodeLinkSelector'] ?? '',
       );
 
-      await _storage.upsertRule(newRule);
+      // 核心修复：处理保存结果
+      final success = await _storage.upsertRule(newRule);
 
       if (mounted) {
         Navigator.of(context, rootNavigator: true).pop();
-        _loadRules();
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已导入: ${newRule.name}')));
+        if (success) {
+          _loadRules();
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已导入: ${newRule.name}')));
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('导入失败，请检查存储空间'), backgroundColor: Colors.red));
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -264,7 +263,6 @@ class _SettingsPageState extends State<SettingsPage> {
       ),
       body: ListView(
         children: [
-          // ====== 规则管理区 ======
           const Padding(
             padding: EdgeInsets.fromLTRB(16, 16, 16, 4),
             child: Text('规则管理 (右上角可一键测活)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
@@ -304,8 +302,15 @@ class _SettingsPageState extends State<SettingsPage> {
                   IconButton(
                     icon: const Icon(Icons.delete_outline),
                     onPressed: () async {
-                      await _storage.deleteRule(r.id);
-                      _loadRules();
+                      // 核心修复：处理删除结果
+                      final success = await _storage.deleteRule(r.id);
+                      if (success) {
+                        _loadRules();
+                      } else if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('删除失败，请检查存储'), backgroundColor: Colors.red),
+                        );
+                      }
                     },
                   ),
                 ],
@@ -354,7 +359,6 @@ class _SettingsPageState extends State<SettingsPage> {
 
           const Divider(height: 32),
 
-          // ====== WebDAV 云同步区 ======
           const Padding(
             padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: Text('云端同步 (WebDAV)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),

@@ -19,15 +19,12 @@ class XPathService {
         initialUrlRequest: URLRequest(url: WebUri(url)),
         initialSettings: InAppWebViewSettings(
           javaScriptEnabled: true,
-          // 移除写死的 Chrome 120，使用空值让系统 WebView 自己决定
           mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
         ),
         onProgressChanged: (controller, progress) async {
           if (progress >= 50 && !completer.isCompleted) {
             try {
-              // 延迟 500ms 等待异步渲染
               await Future.delayed(const Duration(milliseconds: 500));
-              // 核心修复：延迟结束后必须再次检查是否已由 onLoadStop 完成
               if (!completer.isCompleted) {
                 final html = await controller.evaluateJavascript(source: "document.documentElement.outerHTML");
                 if (html != null && html.toString().length > 500) {
@@ -62,9 +59,7 @@ class XPathService {
       if (webView != null) {
         try {
           await webView.dispose();
-        } catch (_) {
-          // 忽略 dispose 异常，防止掩盖原始错误
-        }
+        } catch (_) {}
       }
     }
   }
@@ -89,16 +84,19 @@ class XPathService {
     if (container == null) return [];
 
     final String itemSelector = rule.animeLinkSelector.trim().isEmpty ? '*' : rule.animeLinkSelector;
-    List<Element> items = [];
     
+    List<Element> items = [];
     try {
-      if (container.matchesSelector(itemSelector)) {
-        items = [container];
+      // 核心修复：先尝试查找子元素
+      final children = container.querySelectorAll(itemSelector);
+      if (children.isNotEmpty) {
+        items = children.cast<Element>();
       } else {
-        items = container.querySelectorAll(itemSelector).cast<Element>();
+        // 如果没找到子元素，说明容器本身就是目标条目
+        items = [container];
       }
     } catch (_) {
-      items = container.querySelectorAll(itemSelector).cast<Element>();
+      items = [container];
     }
         
     return items.map((el) {
@@ -139,7 +137,6 @@ class XPathService {
     if (href.isEmpty) return '';
     try {
       final resolved = Uri.parse(baseUrl).resolve(href).toString();
-      // 安全校验：防止 javascript: 伪协议注入
       final scheme = Uri.parse(resolved).scheme.toLowerCase();
       if (scheme != 'http' && scheme != 'https') {
         return '';

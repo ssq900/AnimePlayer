@@ -174,12 +174,10 @@ class _HomePageState extends State<HomePage> {
                         weekday: week,
                         lastEpisodeTitle: h.episodeTitle,
                       ));
-                      
-                      // 核心修复：处理保存结果
                       final success = await _storage.saveSchedules(schedules);
                       if (mounted) {
                         ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text(success ? '已加入追番日历' : '保存失败，请检查磁盘空间')),
+                          SnackBar(content: Text(success ? '已加入追番日历' : '保存失败，请检查存储')),
                         );
                       }
                     }

@@ -58,7 +58,6 @@ class _RuleEditPageState extends State<RuleEditPage> {
       return;
     }
     
-    // 核心修复：处理保存结果
     final success = await _storage.upsertRule(rule);
     if (success) {
       if (mounted) Navigator.pop(context);

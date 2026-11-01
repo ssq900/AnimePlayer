@@ -116,11 +116,9 @@ class _SettingsPageState extends State<SettingsPage> {
       _checkingAll = true;
       _healthStatus.clear();
     });
-    
     for (var rule in _rules) {
       await _checkRuleHealth(rule);
     }
-    
     if (mounted) setState(() => _checkingAll = false);
   }
 
@@ -218,7 +216,6 @@ class _SettingsPageState extends State<SettingsPage> {
         episodeLinkSelector: converted['episodeLinkSelector'] ?? '',
       );
 
-      // 核心修复：处理保存结果
       final success = await _storage.upsertRule(newRule);
 
       if (mounted) {
@@ -227,7 +224,7 @@ class _SettingsPageState extends State<SettingsPage> {
           _loadRules();
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已导入: ${newRule.name}')));
         } else {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('导入失败，请检查存储空间'), backgroundColor: Colors.red));
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('导入失败，请检查存储'), backgroundColor: Colors.red));
         }
       }
     } catch (e) {
@@ -302,14 +299,11 @@ class _SettingsPageState extends State<SettingsPage> {
                   IconButton(
                     icon: const Icon(Icons.delete_outline),
                     onPressed: () async {
-                      // 核心修复：处理删除结果
                       final success = await _storage.deleteRule(r.id);
                       if (success) {
                         _loadRules();
                       } else if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('删除失败，请检查存储'), backgroundColor: Colors.red),
-                        );
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('删除失败，请检查存储')));
                       }
                     },
                   ),

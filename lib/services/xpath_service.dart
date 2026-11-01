@@ -6,7 +6,6 @@ import '../models/rule.dart';
 
 class XPathService {
   Future<String> fetchHtml(String url) async {
-    // 安全拦截：只允许 HTTP/HTTPS
     if (!url.startsWith('http://') && !url.startsWith('https://')) {
       throw Exception('非法的协议请求');
     }
@@ -21,27 +20,19 @@ class XPathService {
           javaScriptEnabled: true,
           mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
         ),
-        onProgressChanged: (controller, progress) async {
-          if (progress >= 50 && !completer.isCompleted) {
-            try {
-              await Future.delayed(const Duration(milliseconds: 500));
-              if (!completer.isCompleted) {
-                final html = await controller.evaluateJavascript(source: "document.documentElement.outerHTML");
-                if (html != null && html.toString().length > 500) {
-                  completer.complete(html.toString());
-                }
-              }
-            } catch (_) {}
-          }
-        },
+        // 弃用 50% 提前抓取，容易抓到空壳
         onLoadStop: (controller, url) async {
           if (!completer.isCompleted) {
             try {
+              // 核心修复：强制等待 1000ms，给 Vue/React 等前端框架留出渲染 DOM 的时间
+              await Future.delayed(const Duration(milliseconds: 1000));
               final html = await controller.evaluateJavascript(source: "document.documentElement.outerHTML");
               if (html != null && !completer.isCompleted) {
                 completer.complete(html.toString());
               }
-            } catch (_) {}
+            } catch (e) {
+              if (!completer.isCompleted) completer.completeError(Exception("提取HTML失败: $e"));
+            }
           }
         },
         onReceivedError: (controller, request, error) {
@@ -87,12 +78,10 @@ class XPathService {
     
     List<Element> items = [];
     try {
-      // 核心修复：先尝试查找子元素
       final children = container.querySelectorAll(itemSelector);
       if (children.isNotEmpty) {
         items = children.cast<Element>();
       } else {
-        // 如果没找到子元素，说明容器本身就是目标条目
         items = [container];
       }
     } catch (_) {
@@ -138,9 +127,7 @@ class XPathService {
     try {
       final resolved = Uri.parse(baseUrl).resolve(href).toString();
       final scheme = Uri.parse(resolved).scheme.toLowerCase();
-      if (scheme != 'http' && scheme != 'https') {
-        return '';
-      }
+      if (scheme != 'http' && scheme != 'https') return '';
       return resolved;
     } catch (_) {
       return '';

@@ -21,7 +21,7 @@ class _DebuggerPageState extends State<DebuggerPage> {
   String _htmlPreview = '';
 
   Future<void> _test() async {
-    final url = _urlController.text.trim();
+    String url = _urlController.text.trim();
     final selector = _selectorController.text.trim();
 
     if (url.isEmpty || selector.isEmpty) {
@@ -29,6 +29,13 @@ class _DebuggerPageState extends State<DebuggerPage> {
         const SnackBar(content: Text('请输入 URL 和 选择器')),
       );
       return;
+    }
+
+    // 核心修复：自动对 URL 里的中文进行 URL 编码
+    try {
+      url = Uri.parse(url).toString();
+    } catch (_) {
+      // 忽略解析异常，使用原样
     }
 
     setState(() {
@@ -40,10 +47,7 @@ class _DebuggerPageState extends State<DebuggerPage> {
     });
 
     try {
-      // 1. 使用 WebView 抓取网页
       final htmlText = await _xpathService.fetchHtml(url);
-      
-      // 2. 解析 HTML
       final doc = html_parser.parse(htmlText, encoding: 'utf-8');
       final elements = doc.querySelectorAll(selector);
 
@@ -53,7 +57,6 @@ class _DebuggerPageState extends State<DebuggerPage> {
           _htmlPreview = htmlText.length > 500 ? htmlText.substring(0, 500) : htmlText;
         });
       } else {
-        // 3. 提取信息
         final firstEl = elements.first;
         String title = firstEl.text.replaceAll(RegExp(r'\s+'), ' ').trim();
         final href = firstEl.attributes['href'] ?? '无链接属性';

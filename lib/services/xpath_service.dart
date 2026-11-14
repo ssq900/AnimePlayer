@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io'; // 引入用于捕获 HandshakeException
-import 'package:flutter/foundation.dart'; // 用于 debugPrint
+import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'package:xml/xml.dart' as xml;
@@ -64,7 +64,7 @@ class XPathService {
         onReceivedError: (controller, request, error) {
           if (!completer.isCompleted && request.isForMainFrame == true) {
             if (error.description.contains("ERR_SSL") || error.description.contains("ERR_CERT")) {
-               completer.completeError(NetworkException("TLS/SSL 握手失败，请检查系统 WebView 版本或网络代理。"));
+               completer.completeError(NetworkException("TLS/SSL 握手失败，请检查网络代理。"));
             } else {
                completer.completeError(NetworkException("网页加载失败: ${error.description}"));
             }
@@ -88,20 +88,38 @@ class XPathService {
     }
   }
 
+  // 核心修复 1：超级 HTML 清洗，避免 xml 解析器被未闭合标签搞崩溃
   String _cleanHtmlForXml(String html) {
     try {
-      final doc = html_parser.parse(html);
+      String cleaned = html;
+      // 强行清理脚本和样式
+      cleaned = cleaned.replaceAll(RegExp(r'<script\b[^>]*>([\s\S]*?)<\/script>'), '');
+      cleaned = cleaned.replaceAll(RegExp(r'<style\b[^>]*>([\s\S]*?)<\/style>'), '');
+      cleaned = cleaned.replaceAll(RegExp(r'<head\b[^>]*>([\s\S]*?)<\/head>'), '');
+      // 强行补全自闭合标签
+      cleaned = cleaned.replaceAll(RegExp(r'<(link|meta|img|br|hr|input)([^>]*?)(?<!/)>'), '<$1$2 />');
+      
+      final doc = html_parser.parse(cleaned);
       return doc.outerHtml;
     } catch (_) {
       return html;
     }
   }
 
+  // 核心修复 2：智能替换，让绝对路径查找变成模糊匹配
   String _normalizeXpath(String xpath) {
     String res = xpath.trim();
     if (!res.startsWith('//') && !res.startsWith('/') && !res.startsWith('./')) {
       res = '//$res';
     }
+    // 把严格的 [@class='xxx'] 替换为 [contains(@class, 'xxx')]
+    // 这样即使网页多加了类名或者顺序变了，也能精准命中！
+    final reg = RegExp(r"""\[@class\s*=\s*['"]([^'"]+)['"]\]""");
+    res = res.replaceAllMapped(reg, (m) {
+      final classes = m.group(1)!.trim();
+      return "[contains(@class, '$classes')]";
+    });
+    
     return res;
   }
 
@@ -128,7 +146,7 @@ class XPathService {
       
       final containerNodes = document.xpath(searchXpath);
       if (containerNodes.isEmpty) {
-        throw ParseException('未找到搜索容器 "${rule.searchSelector}"');
+        throw ParseException('未找到搜索容器 "${rule.searchSelector}"，可能是网站已改版或规则失效。');
       }
 
       List<xml.XmlNode> items = [];
@@ -181,7 +199,6 @@ class XPathService {
     }
   }
 
-  // ... fetchEpisodes 和 resolveEpisodeLink 保持类似逻辑，增加 try-catch 和 ParseException
   Future<List<EpisodeItem>> fetchEpisodes(AnimeRule rule, String detailUrl) async {
     if (rule.episodeListSelector.trim().isEmpty) throw ParseException('剧集列表选择器为空');
     final rawHtml = await fetchHtml(detailUrl);

@@ -14,8 +14,7 @@ import 'package:video_player/video_player.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:volume_controller/volume_controller.dart';
-import 'package:dlna_dart/dlna.dart';
-import 'package:dlna_dart/dlna_device.dart';
+import 'package:dlna_dart/dlna.dart'; // 核心修复：不要 dlna_device.dart
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import '../models/rule.dart';
 import '../services/xpath_service.dart';

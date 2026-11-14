@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'package:xml/xml.dart' as xml;
+import 'package:xml/xpath.dart'; // 核心修复：引入 xpath 扩展
 import '../models/rule.dart';
 
 class XPathService {
@@ -70,7 +71,6 @@ class XPathService {
     }
   }
 
-  // 利用 html 包清洗成标准 XML 格式
   String _cleanHtmlForXml(String html) {
     try {
       final doc = html_parser.parse(html);
@@ -80,7 +80,6 @@ class XPathService {
     }
   }
 
-  // 确保 XPath 总是以 // 开头
   String _normalizeXpath(String xpath) {
     String res = xpath.trim();
     if (!res.startsWith('//') && !res.startsWith('/') && !res.startsWith('./')) {
@@ -106,25 +105,23 @@ class XPathService {
     final rawHtml = await fetchHtml(searchUrl);
     final safeHtml = _cleanHtmlForXml(rawHtml);
     
-    // 核心替换：使用 xml 包原生解析
     final document = xml.XmlDocument.parse(safeHtml);
     final searchXpath = _normalizeXpath(rule.searchSelector);
     
-    final containerNodes = xml.XPathNode.find(document, searchXpath);
+    // 核心修复：使用 document.xpath() 进行查询
+    final containerNodes = document.xpath(searchXpath);
     if (containerNodes.isEmpty) {
       throw Exception('规则不匹配: 网页中未找到容器 "${rule.searchSelector}"，可能网站已改版');
     }
 
     List<xml.XmlNode> items = [];
     
-    // 在每个容器内寻找子节点
     if (rule.animeLinkSelector.isNotEmpty) {
       final linkXpath = _normalizeXpath(rule.animeLinkSelector);
       for (var node in containerNodes) {
-        if (node is xml.XmlNode) {
-          final subNodes = xml.XPathNode.find(node, linkXpath);
-          items.addAll(subNodes);
-        }
+        // 核心修复：对每个容器节点调用 .xpath()
+        final subNodes = node.xpath(linkXpath);
+        items.addAll(subNodes);
       }
     }
 
@@ -175,7 +172,8 @@ class XPathService {
     
     final document = xml.XmlDocument.parse(safeHtml);
     final episodeXpath = _normalizeXpath(rule.episodeListSelector);
-    final nodes = xml.XPathNode.find(document, episodeXpath);
+    // 核心修复：使用 document.xpath()
+    final nodes = document.xpath(episodeXpath);
     
     if (nodes.isEmpty) throw Exception('网页中未找到剧集列表，可能规则失效');
     
@@ -194,7 +192,8 @@ class XPathService {
     
     final document = xml.XmlDocument.parse(safeHtml);
     final linkXpath = _normalizeXpath(rule.episodeLinkSelector);
-    final nodes = xml.XPathNode.find(document, linkXpath);
+    // 核心修复：使用 document.xpath()
+    final nodes = document.xpath(linkXpath);
     
     if (nodes.isEmpty) throw Exception('网页中未找到视频播放地址');
 

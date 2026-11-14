@@ -22,11 +22,12 @@ class _HomePageState extends State<HomePage> {
   List<AnimeRule> _rules = [];
   List<String> _searchHistory = [];
   List<SearchResult> _results = [];
-  
+  List<String> _searchErrors = []; // 错误聚合面板
+  bool _showErrors = false; // 错误面板折叠状态
+
   bool _isSearching = false;
   String? _error;
 
-  // 语音搜索
   final stt.SpeechToText _speech = stt.SpeechToText();
   bool _speechAvailable = false;
   bool _isListening = false;
@@ -39,11 +40,16 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _initSpeech() async {
-    // 核心修复：检测设备是否支持语音识别，不支持自动隐藏按钮
     _speechAvailable = await _speech.initialize(
       onStatus: (val) {
         if (val == 'done' || val == 'notListening') {
-          if (mounted) setState(() => _isListening = false);
+          if (mounted) {
+            setState(() => _isListening = false);
+            // 修复语音搜索触发：监听结束后如果文本框有字，直接搜索
+            if (_searchController.text.trim().isNotEmpty) {
+              _startSearch();
+            }
+          }
         }
       },
       onError: (val) {
@@ -64,14 +70,11 @@ class _HomePageState extends State<HomePage> {
           });
         },
         localeId: 'zh_CN',
-        onDevice: true, // 优先使用本地离线识别
+        onDevice: true,
       );
     } else {
       setState(() => _isListening = false);
       await _speech.stop();
-      if (_searchController.text.isNotEmpty) {
-        _startSearch();
-      }
     }
   }
 
@@ -87,8 +90,11 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _startSearch([String? keyword]) async {
-    final text = keyword ?? _searchController.text.trim();
-    if (text.isEmpty) return;
+    final rawText = keyword ?? _searchController.text.trim();
+    if (rawText.isEmpty) return;
+    // 标准化输入
+    final text = rawText.toLowerCase().trim();
+    _searchController.text = rawText;
 
     final rules = await _storage.loadRules();
     if (!mounted) return;
@@ -100,17 +106,19 @@ class _HomePageState extends State<HomePage> {
 
     setState(() {
       _rules = rules;
-      _searchController.text = text;
       _isSearching = true;
       _error = null;
       _results = [];
+      _searchErrors = [];
+      _showErrors = false;
     });
     FocusScope.of(context).unfocus();
 
+    // 历史标准化去重
     final prefs = await SharedPreferences.getInstance();
     final history = prefs.getStringList('search_history') ?? [];
-    history.remove(text);
-    history.insert(0, text);
+    history.removeWhere((h) => h.toLowerCase().trim() == text);
+    history.insert(0, rawText);
     if (history.length > 10) history.removeLast();
     await prefs.setStringList('search_history', history);
     if (mounted) setState(() => _searchHistory = history);
@@ -122,15 +130,27 @@ class _HomePageState extends State<HomePage> {
     
     Future<void> processRule(AnimeRule rule) async {
       try {
+        // 超时提升至 30 秒
         final res = await _xpath.search(rule, text).timeout(
-          const Duration(seconds: 15), 
-          onTimeout: () => []
+          const Duration(seconds: 30), 
+          onTimeout: () => throw Exception('请求超时 (>30s)')
         );
         if (res.isNotEmpty && mounted) {
           setState(() => _results.addAll(res));
         }
       } catch (e) {
-        debugPrint('搜索源 ${rule.name} 失败: $e');
+        if (mounted) {
+          setState(() {
+            _searchErrors.add('[${rule.name}] ${e.toString()}');
+          });
+        }
+      } finally {
+        // 使用 finally 确保任务计数绝对安全递减
+        activeTasks--;
+        completedTasks++;
+        if (completedTasks == rules.length && mounted) {
+          setState(() => _isSearching = false);
+        }
       }
     }
 
@@ -138,13 +158,7 @@ class _HomePageState extends State<HomePage> {
       while (activeTasks < maxConcurrent && queue.isNotEmpty) {
         final rule = queue.removeAt(0);
         activeTasks++;
-        processRule(rule).then((_) {
-          activeTasks--;
-          completedTasks++;
-          if (completedTasks == rules.length && mounted) {
-            setState(() => _isSearching = false);
-          }
-        });
+        processRule(rule); // 此处不 await，让其并行
       }
       await Future.delayed(const Duration(milliseconds: 200));
     }
@@ -175,19 +189,12 @@ class _HomePageState extends State<HomePage> {
                 suffixIcon: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    // 语音搜索按钮（如果不支持自动隐藏）
                     if (_speechAvailable)
                       IconButton(
-                        icon: Icon(
-                          _isListening ? Icons.mic : Icons.mic_none,
-                          color: _isListening ? Colors.red : null,
-                        ),
+                        icon: Icon(_isListening ? Icons.mic : Icons.mic_none, color: _isListening ? Colors.red : null),
                         onPressed: _listen,
                       ),
-                    IconButton(
-                      icon: const Icon(Icons.arrow_forward),
-                      onPressed: () => _startSearch(),
-                    ),
+                    IconButton(icon: const Icon(Icons.arrow_forward), onPressed: () => _startSearch()),
                   ],
                 ),
               ),
@@ -195,6 +202,21 @@ class _HomePageState extends State<HomePage> {
           ),
           
           if (_isSearching) const LinearProgressIndicator(),
+          
+          // 错误聚合面板
+          if (_searchErrors.isNotEmpty)
+            Card(
+              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              color: Colors.orange.shade50,
+              child: ExpansionTile(
+                title: Text('有 ${_searchErrors.length} 个源搜索失败', style: const TextStyle(color: Colors.orange, fontSize: 14)),
+                initiallyExpanded: false,
+                children: _searchErrors.map((e) => ListTile(
+                  title: Text(e, style: const TextStyle(fontSize: 12)),
+                  dense: true,
+                )).toList(),
+              ),
+            ),
           
           if (_searchHistory.isNotEmpty && _results.isEmpty && !_isSearching)
             Padding(
@@ -245,7 +267,7 @@ class _HomePageState extends State<HomePage> {
               ),
             ),
             
-          if (!_isSearching && _results.isEmpty && _error == null && _searchHistory.isEmpty)
+          if (!_isSearching && _results.isEmpty && _error == null && _searchHistory.isEmpty && _searchErrors.isEmpty)
             const Expanded(child: Center(child: Text('输入关键词开始搜索吧！', style: TextStyle(color: Colors.grey)))),
         ],
       ),

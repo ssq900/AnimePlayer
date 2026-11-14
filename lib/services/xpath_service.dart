@@ -7,7 +7,7 @@ import 'package:html/parser.dart' as html_parser;
 import 'package:xml/xml.dart' as xml;
 import 'package:xml/xpath.dart';
 import '../models/rule.dart';
-import 'exceptions.dart'; // 引入统一异常库
+import 'exceptions.dart';
 
 class XPathService {
   Future<String> fetchHtml(
@@ -85,7 +85,8 @@ class XPathService {
       cleaned = cleaned.replaceAll(RegExp(r'<script\b[^>]*>([\s\S]*?)<\/script>'), '');
       cleaned = cleaned.replaceAll(RegExp(r'<style\b[^>]*>([\s\S]*?)<\/style>'), '');
       cleaned = cleaned.replaceAll(RegExp(r'<head\b[^>]*>([\s\S]*?)<\/head>'), '');
-      cleaned = cleaned.replaceAll(RegExp(r'<(link|meta|img|br|hr|input)([^>]*?)(?<!/)>'), '<$1$2 />');
+      // 核心修复：在替换字符串前加上 r，变成原始字符串，防止 $ 被解析
+      cleaned = cleaned.replaceAll(RegExp(r'<(link|meta|img|br|hr|input)([^>]*?)(?<!/)>'), r'<$1$2 />');
       final doc = html_parser.parse(cleaned);
       return doc.outerHtml;
     } catch (_) { return html; }

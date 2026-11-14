@@ -1,11 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/rule.dart';
 import '../services/storage_service.dart';
-import 'search_page.dart';
-import 'settings_page.dart';
-import 'player_page.dart';
-import 'schedule_page.dart';
-import 'stats_page.dart';
+import '../services/xpath_service.dart';
+import 'detail_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -16,9 +14,15 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final _storage = StorageService();
-  List<AnimeRule> _rules = [];
-  List<HistoryItem> _history = [];
+  final _xpath = XPathService();
   final _searchController = TextEditingController();
+  
+  List<AnimeRule> _rules = [];
+  List<String> _searchHistory = [];
+  List<SearchResult> _results = [];
+  
+  bool _isSearching = false;
+  String? _error;
 
   @override
   void initState() {
@@ -28,164 +32,143 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _load() async {
     final rules = await _storage.loadRules();
-    final history = await _storage.loadHistory();
+    final prefs = await SharedPreferences.getInstance();
+    final history = prefs.getStringList('search_history') ?? [];
     if (!mounted) return;
-    
     setState(() {
       _rules = rules;
-      _history = history;
+      _searchHistory = history;
     });
   }
 
-  void _startGlobalSearch() {
-    final keyword = _searchController.text.trim();
-    if (keyword.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请输入搜索关键词')));
-      return;
-    }
+  Future<void> _startSearch([String? keyword]) async {
+    final text = keyword ?? _searchController.text.trim();
+    if (text.isEmpty) return;
     if (_rules.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请先在设置中导入规则')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请先在“我的”中导入规则')));
       return;
     }
 
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => SearchPage(rules: _rules),
-      ),
-    ).then((_) => _load());
+    _searchController.text = text;
+    FocusScope.of(context).unfocus();
+
+    // 保存搜索历史
+    final prefs = await SharedPreferences.getInstance();
+    final history = prefs.getStringList('search_history') ?? [];
+    history.remove(text);
+    history.insert(0, text);
+    if (history.length > 10) history.removeLast();
+    await prefs.setStringList('search_history', history);
+    setState(() => _searchHistory = history);
+
+    setState(() {
+      _isSearching = true;
+      _error = null;
+      _results = [];
+    });
+
+    // 串行多源搜索
+    for (final rule in _rules) {
+      try {
+        final res = await _xpath.search(rule, text);
+        if (res.isNotEmpty && mounted) {
+          setState(() => _results.addAll(res));
+        }
+      } catch (e) {
+        debugPrint('搜索源 ${rule.name} 失败: $e');
+      }
+    }
+
+    if (mounted) setState(() => _isSearching = false);
+  }
+
+  void _clearHistory() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('search_history');
+    setState(() => _searchHistory = []);
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Anime Aggregator'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.bar_chart),
-            tooltip: '观看统计',
-            onPressed: () {
-              Navigator.push(context, MaterialPageRoute(builder: (_) => const StatsPage()));
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.calendar_month),
-            tooltip: '追番日历',
-            onPressed: () {
-              Navigator.push(context, MaterialPageRoute(builder: (_) => SchedulePage(rules: _rules)));
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: () async {
-              await Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const SettingsPage()),
-              );
-              _load();
-            },
-          ),
-        ],
-      ),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
+      appBar: AppBar(title: const Text('全网聚合搜索')),
+      body: Column(
         children: [
-          TextField(
-            controller: _searchController,
-            textInputAction: TextInputAction.search,
-            onSubmitted: (_) => _startGlobalSearch(),
-            decoration: InputDecoration(
-              hintText: '想看点什么？(全网多源聚合)',
-              prefixIcon: const Icon(Icons.search),
-              border: const OutlineInputBorder(),
-              suffixIcon: IconButton(
-                icon: const Icon(Icons.arrow_forward),
-                onPressed: _startGlobalSearch,
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: TextField(
+              controller: _searchController,
+              textInputAction: TextInputAction.search,
+              onSubmitted: (_) => _startSearch(),
+              decoration: InputDecoration(
+                hintText: '输入番剧名称，即刻全网搜',
+                prefixIcon: const Icon(Icons.search),
+                border: const OutlineInputBorder(),
+                suffixIcon: IconButton(
+                  icon: const Icon(Icons.arrow_forward),
+                  onPressed: () => _startSearch(),
+                ),
               ),
             ),
           ),
-          const SizedBox(height: 12),
-          FilledButton.icon(
-            icon: const Icon(Icons.travel_explore),
-            label: Text('使用 ${_rules.length} 个源进行聚合搜索'),
-            onPressed: _startGlobalSearch,
-            style: FilledButton.styleFrom(minimumSize: const Size(double.infinity, 48)),
-          ),
           
-          const SizedBox(height: 32),
-          
-          if (_history.isNotEmpty) ...[
-            const Text('最近观看 (长按加入日历)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            ..._history.take(10).map((h) {
-              final targetRule = _rules.firstWhere(
-                (r) => r.id == h.ruleId || r.name == h.ruleName,
-                orElse: () => _rules.isNotEmpty ? _rules.first : AnimeRule.empty(),
-              );
-              
-              return Card(
-                child: ListTile(
-                  leading: const Icon(Icons.history),
-                  title: Text(h.animeTitle, maxLines: 1, overflow: TextOverflow.ellipsis),
-                  subtitle: Text('${h.episodeTitle} · ${h.ruleName}', maxLines: 1),
-                  trailing: const Icon(Icons.play_arrow),
-                  onTap: () {
-                    if (targetRule.name.isEmpty) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('该规则已被删除，无法继续播放')),
-                      );
-                      return;
-                    }
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => PlayerPage(
-                          rule: targetRule,
-                          episodeUrl: h.episodeUrl,
-                          title: h.episodeTitle,
-                          animeTitle: h.animeTitle,
+          if (_searchHistory.isNotEmpty && _results.isEmpty && !_isSearching)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                children: [
+                  const Text('搜索历史', style: TextStyle(color: Colors.grey, fontSize: 13)),
+                  const Spacer(),
+                  TextButton(onPressed: _clearHistory, child: const Text('清空', style: TextStyle(fontSize: 12))),
+                ],
+              ),
+            ),
+          if (_searchHistory.isNotEmpty && _results.isEmpty && !_isSearching)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Wrap(
+                spacing: 8,
+                children: _searchHistory.map((h) => ActionChip(
+                  label: Text(h),
+                  onPressed: () => _startSearch(h),
+                )).toList(),
+              ),
+            ),
+
+          if (_isSearching)
+            const Expanded(child: Center(child: CircularProgressIndicator())),
+            
+          if (_error != null)
+            Expanded(child: Center(child: Text('搜索失败: $_error'))),
+
+          if (!_isSearching && _results.isNotEmpty)
+            Expanded(
+              child: ListView.separated(
+                itemCount: _results.length,
+                separatorBuilder: (_, __) => const Divider(height: 1),
+                itemBuilder: (_, i) {
+                  final r = _results[i];
+                  return ListTile(
+                    title: Text(r.title),
+                    subtitle: Text('${r.rule.name} · ${r.link}', maxLines: 1, overflow: TextOverflow.ellipsis),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => DetailPage(rule: r.rule, detailUrl: r.link, title: r.title),
                         ),
-                      ),
-                    ).then((_) => _load());
-                  },
-                  onLongPress: () async {
-                    final week = await showDialog<int>(
-                      context: context,
-                      builder: (ctx) => AlertDialog(
-                        title: const Text('加入追番日历'),
-                        content: const Text('选择每周更新的日子：'),
-                        actions: [
-                          for (int i = 1; i <= 7; i++)
-                            TextButton(
-                              onPressed: () => Navigator.pop(ctx, i),
-                              child: Text('周${['一','二','三','四','五','六','日'][i-1]}'),
-                            )
-                        ],
-                      ),
-                    );
-                    if (week != null) {
-                      final schedules = await _storage.loadSchedules();
-                      schedules.removeWhere((e) => e.detailUrl == h.episodeUrl && e.ruleId == h.ruleId);
-                      schedules.add(ScheduleItem(
-                        animeTitle: h.animeTitle,
-                        detailUrl: h.episodeUrl,
-                        ruleId: h.ruleId,
-                        weekday: week,
-                        lastEpisodeTitle: h.episodeTitle,
-                      ));
-                      final success = await _storage.saveSchedules(schedules);
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text(success ? '已加入追番日历' : '保存失败，请检查存储')),
-                        );
-                      }
-                    }
-                  },
-                ),
-              );
-            }),
-          ]
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
+            
+          if (!_isSearching && _results.isEmpty && _error == null && _searchHistory.isEmpty)
+            const Expanded(
+              child: Center(child: Text('输入关键词开始搜索吧！', style: TextStyle(color: Colors.grey))),
+            ),
         ],
       ),
     );

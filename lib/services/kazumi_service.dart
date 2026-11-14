@@ -55,27 +55,36 @@ class KazumiService {
     String css = xpath.trim();
     if (css.startsWith('.') || css.startsWith('#')) return css;
 
-    // 拦截不支持的 XPath 数字索引 (如 [2])，防止错误转换导致静默失败
-    if (RegExp(r'\[\d+\]').hasMatch(css)) {
-      throw Exception("规则包含不支持的 XPath 数字索引 (如 [2])，请手动修改 CSS Selector");
-    }
-
+    // 1. 处理 //tag[@class="a b"] -> .a.b
     final regClass = RegExp(r'''//\w+\[@class=["']([^"']+)["']\]''');
     if (regClass.hasMatch(css)) {
       final match = regClass.firstMatch(css);
       return '.${match!.group(1)!.replaceAll(' ', '.')}';
     }
 
+    // 2. 处理 //tag[@id="x"] -> #x
     final regId = RegExp(r'''//\w+\[@id=["']([^"']+)["']\]''');
     if (regId.hasMatch(css)) {
       final match = regId.firstMatch(css);
       return '#${match!.group(1)}';
     }
 
+    // 3. 处理 //tag[@attr="v"] -> tag[attr="v"]
+    css = css.replaceAllMapped(RegExp(r'''//(\w+)\[@([^=]+)="([^"]+)"\]'''), (m) {
+      return '${m[1]}[${m[2]}="${m[3]}"]';
+    });
+
+    // 4. 数字索引降级 -> :nth-of-type
+    css = css.replaceAllMapped(RegExp(r'(\w+)\[(\d+)\]'), (match) {
+      return '${match.group(1)}:nth-of-type(${match.group(2)})';
+    });
+
+    // 5. 基础路径清理
     css = css.replaceAll('//', ' ');
     css = css.replaceAll('/', ' > ');
     css = css.replaceAll(RegExp(r'\[@.*?\]'), '');
     css = css.replaceAll(RegExp(r'\s+'), ' ').trim();
+    
     if (css.startsWith('>')) css = css.substring(1).trim();
     
     if (css.isEmpty) return 'a';
@@ -83,17 +92,22 @@ class KazumiService {
   }
 
   Map<String, String> convertKazumiRule(Map<String, dynamic> kRule) {
+    // 兼容不同版本的字段名
     String baseUrl = kRule['searchURL'] ?? kRule['baseUrl'] ?? kRule['baseURL'] ?? '';
+    
+    // 处理 URL 占位符
     baseUrl = baseUrl.replaceAll('@keyword', '{keyword}');
     if (!baseUrl.contains('{keyword}')) {
       baseUrl = kRule['baseURL'] ?? kRule['baseUrl'] ?? baseUrl;
     }
 
+    // 映射搜索字段
     final searchSelector = _xpathToCss(kRule['searchList'] ?? kRule['searchResult'] ?? '');
     final animeLinkSelector = _xpathToCss(kRule['searchName'] ?? kRule['searchResultItem'] ?? '');
 
-    String episodeList = _xpathToCss(kRule['chapterRoads'] ?? kRule['episodeList'] ?? '');
-    String episodeLink = 'video, iframe, source';
+    // 映射剧集字段
+    String episodeList = '';
+    String episodeLink = 'video, iframe, source'; // 兜底
 
     final chapter = kRule['chapter'];
     if (chapter != null && chapter is Map) {
@@ -101,6 +115,7 @@ class KazumiService {
       final customLink = _xpathToCss(chapter['link'] ?? kRule['chapterResult'] ?? '');
       if (customLink.isNotEmpty) episodeLink = customLink;
     } else {
+      episodeList = _xpathToCss(kRule['chapterRoads'] ?? kRule['episodeList'] ?? '');
       final customLink = _xpathToCss(kRule['chapterResult'] ?? kRule['episodeLink'] ?? '');
       if (customLink.isNotEmpty) episodeLink = customLink;
     }

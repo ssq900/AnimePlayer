@@ -1,6 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'pages/home_page.dart';
+import 'pages/main_layout.dart';
 import 'services/notification_service.dart';
 
 void main() async {
@@ -19,43 +19,44 @@ class _MyHttpOverrides extends HttpOverrides {
         final port = uri.port;
         final noProxy = Platform.environment['no_proxy'] ?? Platform.environment['NO_PROXY'];
 
-        // 增强版 no_proxy 匹配逻辑
         if (noProxy != null && noProxy.isNotEmpty) {
           final domains = noProxy.split(',');
           for (var d in domains) {
             d = d.trim().toLowerCase();
             if (d.isEmpty) continue;
             
-            String proxyHost = d;
-            int? proxyPort;
+            String checkHost = d;
+            int? checkPort;
             if (d.contains(':')) {
               final parts = d.split(':');
-              proxyHost = parts[0];
-              proxyPort = int.tryParse(parts[1]);
+              checkHost = parts[0];
+              checkPort = int.tryParse(parts[1]);
             }
-            // 端口不匹配则跳过
-            if (proxyPort != null && proxyPort != port) continue;
+            if (checkPort != null && checkPort != port) continue;
 
-            if (proxyHost.startsWith('*.')) {
-              final suffix = proxyHost.substring(2);
+            if (checkHost.startsWith('*.')) {
+              final suffix = checkHost.substring(2);
               if (host == suffix || host.endsWith('.$suffix')) return 'DIRECT';
-            } else if (host == proxyHost) {
+            } else if (host == checkHost) {
               return 'DIRECT';
             }
           }
         }
 
-        String? proxy = Platform.environment['https_proxy'] ?? 
-                         Platform.environment['http_proxy'] ?? 
-                         Platform.environment['HTTP_PROXY'];
-                         
-        if (proxy != null && proxy.isNotEmpty) {
-          // 兼容 socks5:// 和 http://，保留 @ 鉴权部分
-          String cleanProxy = proxy.replaceFirst(RegExp(r'^[a-zA-Z0-9]+://'), '');
-          if (cleanProxy.endsWith('/')) {
-            cleanProxy = cleanProxy.substring(0, cleanProxy.length - 1);
+        final envProxy = Platform.environment['https_proxy'] ?? Platform.environment['http_proxy'] ?? Platform.environment['HTTP_PROXY'];
+        if (envProxy != null && envProxy.isNotEmpty) {
+          try {
+            // 兼容性修复：使用 Uri 解析，避免字符串截取出错
+            final pUri = Uri.parse(envProxy.contains('://') ? envProxy : 'http://$envProxy');
+            final proxyHost = pUri.host;
+            final proxyPort = pUri.hasPort ? pUri.port : 8080;
+            // 保留鉴权信息
+            final auth = pUri.userInfo.isNotEmpty ? '${pUri.userInfo}@' : '';
+            return 'PROXY $auth$proxyHost:$proxyPort';
+          } catch (_) {
+            // 解析失败直接忽略代理
+            return 'DIRECT';
           }
-          return 'PROXY $cleanProxy';
         }
         return 'DIRECT';
       };
@@ -68,13 +69,10 @@ class AnimeApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Anime Aggregator',
+      title: 'AnimePlayer',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorSchemeSeed: Colors.deepPurple,
-        useMaterial3: true,
-      ),
-      home: const HomePage(),
+      theme: ThemeData(colorSchemeSeed: Colors.deepPurple, useMaterial3: true),
+      home: const MainLayout(), // 改为新的框架
     );
   }
 }

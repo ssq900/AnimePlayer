@@ -6,6 +6,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart'; // 引入 PlatformException
 import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:path_provider/path_provider.dart';
@@ -14,7 +15,7 @@ import 'package:video_player/video_player.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:volume_controller/volume_controller.dart';
-import 'package:dlna_dart/dlna.dart'; // 核心修复：不要 dlna_device.dart
+import 'package:dlna_dart/dlna.dart'; 
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import '../models/rule.dart';
 import '../services/xpath_service.dart';
@@ -58,6 +59,7 @@ class _PlayerPageState extends State<PlayerPage> {
   String? _resolvedUrl;
   String? _error;
   
+  // ====== 网页媒体流监听与接管 ======
   Set<String> _sniffedUrls = {}; 
   bool _isWebViewMode = false; 
   String? _webViewCookies; 
@@ -67,6 +69,7 @@ class _PlayerPageState extends State<PlayerPage> {
   Timer? _progressTimer;
   int _sleepMinutesRemaining = 0;
 
+  // 弹幕与 OP/ED 配置
   List<DanmakuItem> _danmakus = [];
   final _danmakuController = TextEditingController();
   bool _showDanmakuInput = false;
@@ -76,10 +79,12 @@ class _PlayerPageState extends State<PlayerPage> {
   Duration? _opEndTime;
   bool _showSkipOpBtn = false;
 
+  // 字幕配置
   List<SubtitleItem> _subtitles = [];
   String? _currentSubtitleText;
   bool _subtitleEnabled = true;
 
+  // 手势控制状态
   String? _gestureTip;
   Timer? _gestureTipTimer;
   double _dragStartX = 0;
@@ -231,12 +236,38 @@ class _PlayerPageState extends State<PlayerPage> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _error = '媒体流解析失败：该资源可能受 DRM 保护或需要高级鉴权，已退回网页模式。\n($e)';
+          _error = '媒体流解析失败：可能受 DRM 保护或需要高级鉴权。\n($e)';
           _loading = false;
           _isWebViewMode = true;
         });
+        
+        // 核心修复：区分错误类型，如果是底层编码不支持，弹窗提示
+        if (e is PlatformException) {
+          _showFallbackDialog(_resolvedUrl!);
+        }
       }
     }
+  }
+
+  // 核心修复：外部播放器降级弹窗
+  void _showFallbackDialog(String url) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('播放失败'),
+        content: const Text('当前设备的硬件解码器不支持该视频格式（或 HLS 切片加密过深）。是否尝试使用外部播放器打开？'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              _openExternal(url);
+            }, 
+            child: const Text('用外部播放器打开')
+          ),
+        ],
+      ),
+    );
   }
 
   void _handleSniffedUrl(String url, InAppWebViewController controller) async {
@@ -602,11 +633,19 @@ class _PlayerPageState extends State<PlayerPage> {
 
   @override
   void dispose() {
-    _sleepTimer?.cancel(); _gestureTipTimer?.cancel(); _progressTimer?.cancel(); _danmakuController.dispose();
+    _sleepTimer?.cancel(); 
+    _gestureTipTimer?.cancel(); 
+    _progressTimer?.cancel(); 
+    _danmakuController.dispose();
+    
     if (_controller != null && _controller!.value.isInitialized) {
        SharedPreferences.getInstance().then((prefs) => prefs.setInt(_progressKey, _controller!.value.position.inMilliseconds));
     }
-    _controller?.removeListener(() {}); _controller?.dispose(); _controller = null;
+    _controller?.removeListener(() {}); 
+    _controller?.dispose(); 
+    _controller = null;
+    
+    // 恢复系统默认亮度
     ScreenBrightness().resetScreenBrightness();
     super.dispose();
   }

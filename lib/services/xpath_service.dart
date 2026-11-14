@@ -1,15 +1,27 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io'; // 引入用于捕获 HandshakeException
+import 'package:flutter/foundation.dart'; // 用于 debugPrint
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'package:xml/xml.dart' as xml;
-import 'package:xml/xpath.dart'; // 核心修复：引入 xpath 扩展
+import 'package:xml/xpath.dart';
 import '../models/rule.dart';
+
+class AppException implements Exception {
+  final String message;
+  AppException(this.message);
+  @override
+  String toString() => message;
+}
+
+class NetworkException extends AppException { NetworkException(String msg) : super(msg); }
+class ParseException extends AppException { ParseException(String msg) : super(msg); }
 
 class XPathService {
   Future<String> fetchHtml(String url, {String? waitForSelector}) async {
     if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      throw Exception('非法的协议请求: 仅支持 HTTP/HTTPS');
+      throw NetworkException('非法的协议请求: 仅支持 HTTP/HTTPS');
     }
 
     final completer = Completer<String>();
@@ -46,23 +58,28 @@ class XPathService {
               completer.complete(html.toString());
             }
           } catch (e) {
-            if (!completer.isCompleted) completer.completeError(Exception("提取HTML失败: $e"));
+            if (!completer.isCompleted) completer.completeError(NetworkException("提取HTML失败: $e"));
           }
         },
         onReceivedError: (controller, request, error) {
           if (!completer.isCompleted && request.isForMainFrame == true) {
-            completer.completeError(Exception("网页加载失败: ${error.description}"));
+            if (error.description.contains("ERR_SSL") || error.description.contains("ERR_CERT")) {
+               completer.completeError(NetworkException("TLS/SSL 握手失败，请检查系统 WebView 版本或网络代理。"));
+            } else {
+               completer.completeError(NetworkException("网页加载失败: ${error.description}"));
+            }
           }
         },
       );
 
       await webView.run();
       return await completer.future.timeout(const Duration(seconds: 25), onTimeout: () {
-        if (!completer.isCompleted) completer.completeError(Exception('网页加载超时'));
+        if (!completer.isCompleted) completer.completeError(NetworkException('网页加载超时 (>25s)'));
         return '';
       });
     } catch (e) {
-      throw Exception('网络异常: $e');
+      if (e is AppException) rethrow;
+      throw NetworkException('网络异常: $e');
     } finally {
       if (webView != null && !isDisposed) {
         isDisposed = true;
@@ -90,7 +107,7 @@ class XPathService {
 
   Future<List<SearchResult>> search(AnimeRule rule, String keyword) async {
     if (rule.searchSelector.trim().isEmpty) {
-      throw Exception('规则错误: 搜索结果容器选择器为空');
+      throw ParseException('规则错误: 搜索结果容器选择器为空');
     }
     
     final encoded = Uri.encodeComponent(keyword);
@@ -105,104 +122,95 @@ class XPathService {
     final rawHtml = await fetchHtml(searchUrl);
     final safeHtml = _cleanHtmlForXml(rawHtml);
     
-    final document = xml.XmlDocument.parse(safeHtml);
-    final searchXpath = _normalizeXpath(rule.searchSelector);
-    
-    // 核心修复：使用 document.xpath() 进行查询
-    final containerNodes = document.xpath(searchXpath);
-    if (containerNodes.isEmpty) {
-      throw Exception('规则不匹配: 网页中未找到容器 "${rule.searchSelector}"，可能网站已改版');
-    }
-
-    List<xml.XmlNode> items = [];
-    
-    if (rule.animeLinkSelector.isNotEmpty) {
-      final linkXpath = _normalizeXpath(rule.animeLinkSelector);
-      for (var node in containerNodes) {
-        // 核心修复：对每个容器节点调用 .xpath()
-        final subNodes = node.xpath(linkXpath);
-        items.addAll(subNodes);
-      }
-    }
-
-    if (items.isEmpty) {
-      items = containerNodes.toList();
-    }
-
-    return items.whereType<xml.XmlElement>().map((el) {
-      final href = el.getAttribute('href') ?? el.getAttribute('src') ?? '';
-      final title = el.innerText.replaceAll(RegExp(r'\s+'), ' ').trim();
+    try {
+      final document = xml.XmlDocument.parse(safeHtml);
+      final searchXpath = _normalizeXpath(rule.searchSelector);
       
-      if (el.name.local != 'a' && href.isEmpty) {
-        try {
-          final innerA = el.findElements('a').firstOrNull;
-          if (innerA != null) {
-            return SearchResult(
-              title: innerA.innerText.replaceAll(RegExp(r'\s+'), ' ').trim(),
-              link: _absolute(rule.baseUrl, innerA.getAttribute('href') ?? ''),
-              rule: rule
-            );
-          }
-        } catch (_) {}
+      final containerNodes = document.xpath(searchXpath);
+      if (containerNodes.isEmpty) {
+        throw ParseException('未找到搜索容器 "${rule.searchSelector}"');
       }
 
-      return SearchResult(title: title, link: _absolute(rule.baseUrl, href), rule: rule);
-    })
-    .where((r) {
-      if (r.link.isEmpty || r.title.isEmpty) return false;
-      final uri = Uri.tryParse(r.link);
-      if (uri == null) return false;
-      final path = uri.path;
-      if (path == '/' || path.isEmpty) return false;
+      List<xml.XmlNode> items = [];
       
-      final cleanKeyword = keyword.toLowerCase().trim();
-      final cleanTitle = r.title.toLowerCase().trim();
-      if (!cleanTitle.contains(cleanKeyword) && !cleanKeyword.contains(cleanTitle)) {
-        return false;
+      if (rule.animeLinkSelector.isNotEmpty) {
+        final linkXpath = _normalizeXpath(rule.animeLinkSelector);
+        for (var node in containerNodes) {
+          final subNodes = node.xpath(linkXpath);
+          items.addAll(subNodes);
+        }
       }
-      return true;
-    }).toList();
+
+      if (items.isEmpty) items = containerNodes.toList();
+
+      return items.whereType<xml.XmlElement>().map((el) {
+        final href = el.getAttribute('href') ?? el.getAttribute('src') ?? '';
+        final title = el.innerText.replaceAll(RegExp(r'\s+'), ' ').trim();
+        
+        if (el.name.local != 'a' && href.isEmpty) {
+          try {
+            final innerA = el.findElements('a').firstOrNull;
+            if (innerA != null) {
+              return SearchResult(
+                title: innerA.innerText.replaceAll(RegExp(r'\s+'), ' ').trim(),
+                link: _absolute(rule.baseUrl, innerA.getAttribute('href') ?? ''),
+                rule: rule
+              );
+            }
+          } catch (_) {}
+        }
+        return SearchResult(title: title, link: _absolute(rule.baseUrl, href), rule: rule);
+      })
+      .where((r) {
+        if (r.link.isEmpty || r.title.isEmpty) return false;
+        final uri = Uri.tryParse(r.link);
+        if (uri == null) return false;
+        final path = uri.path;
+        if (path == '/' || path.isEmpty) return false;
+        
+        final cleanKeyword = keyword.toLowerCase().trim();
+        final cleanTitle = r.title.toLowerCase().trim();
+        if (!cleanTitle.contains(cleanKeyword) && !cleanKeyword.contains(cleanTitle)) {
+          return false;
+        }
+        return true;
+      }).toList();
+    } catch (e) {
+      if (e is AppException) rethrow;
+      throw ParseException('XPath解析出错: $e');
+    }
   }
 
+  // ... fetchEpisodes 和 resolveEpisodeLink 保持类似逻辑，增加 try-catch 和 ParseException
   Future<List<EpisodeItem>> fetchEpisodes(AnimeRule rule, String detailUrl) async {
-    if (rule.episodeListSelector.trim().isEmpty) throw Exception('规则错误: 剧集列表选择器为空');
-    
+    if (rule.episodeListSelector.trim().isEmpty) throw ParseException('剧集列表选择器为空');
     final rawHtml = await fetchHtml(detailUrl);
-    final safeHtml = _cleanHtmlForXml(rawHtml);
-    
-    final document = xml.XmlDocument.parse(safeHtml);
-    final episodeXpath = _normalizeXpath(rule.episodeListSelector);
-    // 核心修复：使用 document.xpath()
-    final nodes = document.xpath(episodeXpath);
-    
-    if (nodes.isEmpty) throw Exception('网页中未找到剧集列表，可能规则失效');
-    
-    return nodes.whereType<xml.XmlElement>().map((el) {
-      final href = el.getAttribute('href') ?? '';
-      final title = el.innerText.replaceAll(RegExp(r'\s+'), ' ').trim();
-      return EpisodeItem(title: title, link: _absolute(rule.baseUrl, href));
-    }).where((e) => e.link.isNotEmpty).toList();
+    try {
+      final document = xml.XmlDocument.parse(_cleanHtmlForXml(rawHtml));
+      final nodes = document.xpath(_normalizeXpath(rule.episodeListSelector));
+      if (nodes.isEmpty) throw ParseException('未找到剧集列表');
+      return nodes.whereType<xml.XmlElement>().map((el) {
+        return EpisodeItem(title: el.innerText.trim(), link: _absolute(rule.baseUrl, el.getAttribute('href') ?? ''));
+      }).where((e) => e.link.isNotEmpty).toList();
+    } catch (e) {
+      throw ParseException('解析剧集失败: $e');
+    }
   }
 
   Future<String> resolveEpisodeLink(AnimeRule rule, String episodeUrl) async {
     if (rule.episodeLinkSelector.trim().isEmpty) return episodeUrl;
-    
     final rawHtml = await fetchHtml(episodeUrl);
-    final safeHtml = _cleanHtmlForXml(rawHtml);
-    
-    final document = xml.XmlDocument.parse(safeHtml);
-    final linkXpath = _normalizeXpath(rule.episodeLinkSelector);
-    // 核心修复：使用 document.xpath()
-    final nodes = document.xpath(linkXpath);
-    
-    if (nodes.isEmpty) throw Exception('网页中未找到视频播放地址');
-
-    final el = nodes.whereType<xml.XmlElement>().firstOrNull;
-    if (el == null) return episodeUrl;
-
-    final href = el.getAttribute('href') ?? el.getAttribute('src') ?? '';
-    if (href.isEmpty) return episodeUrl;
-    return _absolute(rule.baseUrl, href);
+    try {
+      final document = xml.XmlDocument.parse(_cleanHtmlForXml(rawHtml));
+      final nodes = document.xpath(_normalizeXpath(rule.episodeLinkSelector));
+      final el = nodes.whereType<xml.XmlElement>().firstOrNull;
+      if (el == null) throw ParseException('未找到视频播放地址');
+      final href = el.getAttribute('href') ?? el.getAttribute('src') ?? '';
+      if (href.isEmpty) return episodeUrl;
+      return _absolute(rule.baseUrl, href);
+    } catch (e) {
+      throw ParseException('解析视频链接失败: $e');
+    }
   }
 
   String _absolute(String baseUrl, String href) {
@@ -213,8 +221,6 @@ class XPathService {
       final scheme = Uri.parse(resolved).scheme.toLowerCase();
       if (scheme != 'http' && scheme != 'https') return '';
       return resolved;
-    } catch (_) {
-      return '';
-    }
+    } catch (_) { return ''; }
   }
 }

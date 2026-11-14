@@ -53,26 +53,26 @@ class KazumiService {
     String css = xpath.trim();
     if (css.startsWith('.') || css.startsWith('#')) return css;
 
-    // 1. 处理 //tag[@class="a b"] -> .a.b
+    // 1. 提取 Class
     final regClass = RegExp(r'''//\w+\[@class=["']([^"']+)["']\]''');
     if (regClass.hasMatch(css)) {
       final match = regClass.firstMatch(css);
       return '.${match!.group(1)!.replaceAll(' ', '.')}';
     }
 
-    // 2. 处理 //tag[@id="x"] -> #x
+    // 2. 提取 ID
     final regId = RegExp(r'''//\w+\[@id=["']([^"']+)["']\]''');
     if (regId.hasMatch(css)) {
       final match = regId.firstMatch(css);
       return '#${match!.group(1)}';
     }
 
-    // 3. 处理 //tag[@attr="v"] -> tag[attr="v"]
+    // 3. 其他属性
     css = css.replaceAllMapped(RegExp(r'''//(\w+)\[@([^=]+)="([^"]+)"\]'''), (m) {
       return '${m[1]}[${m[2]}="${m[3]}"]';
     });
 
-    // 4. 核心修复：直接删除所有的数字索引（如 [2]），防止生成 nth-of-type 导致解析崩溃
+    // 4. 强行删除数字索引
     css = css.replaceAll(RegExp(r'\[\d+\]'), '');
     css = css.replaceAll(RegExp(r':nth-of-type\(\d+\)'), '');
 
@@ -82,7 +82,11 @@ class KazumiService {
     css = css.replaceAll(RegExp(r'\s+'), ' ').trim();
     if (css.startsWith('>')) css = css.substring(1).trim();
     
-    if (css.isEmpty) return 'a';
+    // 【核心修复】：如果清理后只剩下一堆 div 标签（没有任何类名和 ID），判定为垃圾规则，直接废弃
+    if (css.isEmpty || !css.contains('.') && !css.contains('#')) {
+      return 'UNSUPPORTED_RULE'; 
+    }
+    
     return css;
   }
 
@@ -102,18 +106,23 @@ class KazumiService {
     if (chapter != null && chapter is Map) {
       episodeList = _xpathToCss(chapter['list'] ?? kRule['chapterRoads'] ?? '');
       final customLink = _xpathToCss(chapter['link'] ?? kRule['chapterResult'] ?? '');
-      if (customLink.isNotEmpty) episodeLink = customLink;
+      if (customLink.isNotEmpty && customLink != 'UNSUPPORTED_RULE') episodeLink = customLink;
     } else {
       final customLink = _xpathToCss(kRule['chapterResult'] ?? kRule['episodeLink'] ?? '');
-      if (customLink.isNotEmpty) episodeLink = customLink;
+      if (customLink.isNotEmpty && customLink != 'UNSUPPORTED_RULE') episodeLink = customLink;
+    }
+
+    // 如果搜索选择器是垃圾规则，直接抛出异常阻止导入
+    if (searchSelector == 'UNSUPPORTED_RULE' || searchSelector.isEmpty) {
+       throw Exception('该规则基于纯标签层级，无法转换为稳健的 CSS 选择器，已跳过。');
     }
 
     return {
       'name': kRule['name'] ?? '未命名规则',
       'baseUrl': baseUrl,
       'searchSelector': searchSelector,
-      'animeLinkSelector': animeLinkSelector,
-      'episodeListSelector': episodeList,
+      'animeLinkSelector': animeLinkSelector == 'UNSUPPORTED_RULE' ? 'a' : animeLinkSelector,
+      'episodeListSelector': episodeList == 'UNSUPPORTED_RULE' ? 'a' : episodeList,
       'episodeLinkSelector': episodeLink,
     };
   }

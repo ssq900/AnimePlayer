@@ -25,10 +25,9 @@ class XPathService {
         onLoadStop: (controller, url) async {
           if (completer.isCompleted) return;
           try {
-            // 智能等待：安全转义选择器，防止 JS 注入
             if (waitForSelector != null && waitForSelector.isNotEmpty) {
-              final safeSelector = jsonEncode(waitForSelector); // 转义特殊字符
-              for (int i = 0; i < 15; i++) { // 最多等 7.5 秒
+              final safeSelector = jsonEncode(waitForSelector);
+              for (int i = 0; i < 15; i++) { 
                 if (completer.isCompleted) return;
                 final hasElement = await controller.evaluateJavascript(
                     source: "document.querySelector($safeSelector) != null"
@@ -57,7 +56,6 @@ class XPathService {
       );
 
       await webView.run();
-      // 超时提升至 25 秒
       return await completer.future.timeout(const Duration(seconds: 25), onTimeout: () {
         if (!completer.isCompleted) completer.completeError(Exception('网页加载超时'));
         return '';
@@ -75,7 +73,6 @@ class XPathService {
   Document _parse(String htmlText) => html_parser.parse(htmlText);
 
   Future<List<SearchResult>> search(AnimeRule rule, String keyword) async {
-    // P0 修复 1：空选择器抛出明确异常
     if (rule.searchSelector.trim().isEmpty) {
       throw Exception('规则错误: 搜索结果容器选择器 (searchSelector) 为空');
     }
@@ -89,15 +86,12 @@ class XPathService {
       searchUrl = '$searchUrl${sep}wd=$encoded';
     }
 
-    // P0 修复 3：等待 searchSelector 出现，而不是 animeLinkSelector
     final htmlText = await fetchHtml(searchUrl, waitForSelector: rule.searchSelector);
     final doc = _parse(htmlText);
     
     final container = doc.querySelector(rule.searchSelector);
-    
-    // P0 修复 2：容器为 null 时抛出异常，不再静默失败
     if (container == null) {
-      throw Exception('规则不匹配: 网页中未找到容器 "${rule.searchSelector}"，可能是网站改版或规则错误');
+      throw Exception('规则不匹配: 网页中未找到容器 "${rule.searchSelector}"');
     }
 
     final String itemSelector = rule.animeLinkSelector.trim().isEmpty ? '*' : rule.animeLinkSelector;
@@ -114,13 +108,34 @@ class XPathService {
       final title = _cleanText(anchor?.attributes['title'] ?? anchor?.text ?? el.text);
       final href = anchor?.attributes['href'] ?? '';
       return SearchResult(title: title, link: _absolute(rule.baseUrl, href), rule: rule);
-    }).where((r) => r.link.isNotEmpty && r.title.isNotEmpty).toList();
+    })
+    // 【核心修复】：相关性及有效性过滤
+    .where((r) {
+      if (r.link.isEmpty || r.title.isEmpty) return false;
+      
+      // 1. 过滤掉主页和过短的链接
+      final uri = Uri.tryParse(r.link);
+      if (uri == null) return false;
+      final path = uri.path;
+      if (path == '/' || path.isEmpty || (path.length < 5 && !path.contains('anime'))) {
+        return false;
+      }
+
+      // 2. 必须包含搜索词（过滤推荐位、侧边栏、无职转生等）
+      final cleanKeyword = keyword.toLowerCase().trim();
+      final cleanTitle = r.title.toLowerCase().trim();
+      
+      // 允许简单的空格忽略匹配
+      if (!cleanTitle.contains(cleanKeyword) && !cleanKeyword.contains(cleanTitle)) {
+        return false;
+      }
+      
+      return true;
+    }).toList();
   }
 
   Future<List<EpisodeItem>> fetchEpisodes(AnimeRule rule, String detailUrl) async {
-    if (rule.episodeListSelector.trim().isEmpty) {
-      throw Exception('规则错误: 剧集列表选择器为空');
-    }
+    if (rule.episodeListSelector.trim().isEmpty) throw Exception('规则错误: 剧集列表选择器为空');
     final htmlText = await fetchHtml(detailUrl, waitForSelector: rule.episodeListSelector);
     final doc = _parse(htmlText);
     final list = doc.querySelectorAll(rule.episodeListSelector);
@@ -150,9 +165,7 @@ class XPathService {
   String _absolute(String baseUrl, String href) {
     if (href.isEmpty) return '';
     try {
-      // P2 修复：兼容相对协议 //example.com/a.mp4
       if (href.startsWith('//')) return '${Uri.parse(baseUrl).scheme}:$href';
-      
       final resolved = Uri.parse(baseUrl).resolve(href).toString();
       final scheme = Uri.parse(resolved).scheme.toLowerCase();
       if (scheme != 'http' && scheme != 'https') return '';

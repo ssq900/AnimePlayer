@@ -57,9 +57,10 @@ class _PlayerPageState extends State<PlayerPage> {
   String? _resolvedUrl;
   String? _error;
   
-  // ====== 网页媒体流监听状态 ======
+  // ====== 网页媒体流监听与接管 ======
   Set<String> _sniffedUrls = {}; 
   bool _isWebViewMode = false; // 当前是否处于解析网页模式
+  String? _webViewCookies; // 抓取的 Cookie 用于原生播放器
 
   double _playbackSpeed = 1.0;
   Timer? _sleepTimer;
@@ -91,56 +92,6 @@ class _PlayerPageState extends State<PlayerPage> {
   String get _danmakuKey => 'danmaku_${base64Url.encode(utf8.encode(widget.episodeUrl))}';
   String get _opKey => 'op_end_${base64Url.encode(utf8.encode(widget.episodeUrl))}';
   String get _progressKey => 'progress_${base64Url.encode(utf8.encode(widget.episodeUrl))}';
-
-  // 注入的 JS 脚本：监听网络请求和 DOM 节点
-  final String _sniffJs = """
-    (function() {
-        function isValidStream(url) {
-            if (!url || typeof url !== 'string') return false;
-            // 过滤掉 MSE 的 blob 链接，原生播放器无法直接处理
-            if (url.startsWith('blob:') || url.startsWith('data:')) return false;
-            
-            var lowerUrl = url.toLowerCase();
-            // 仅匹配常见的公开媒体流后缀或特征
-            return lowerUrl.includes('.m3u8') || 
-                   lowerUrl.includes('.mp4') || 
-                   lowerUrl.includes('.flv') ||
-                   lowerUrl.includes('mime=video');
-        }
-
-        var originalXhrOpen = XMLHttpRequest.prototype.open;
-        XMLHttpRequest.prototype.open = function(method, url) {
-            if (isValidStream(url)) {
-                window.flutter_inappwebview.callHandler('mediaSniffed', url);
-            }
-            return originalXhrOpen.apply(this, arguments);
-        };
-
-        var originalFetch = window.fetch;
-        window.fetch = function(input, init) {
-            var url = (typeof input === 'string') ? input : (input ? input.url : '');
-            if (isValidStream(url)) {
-                window.flutter_inappwebview.callHandler('mediaSniffed', url);
-            }
-            return originalFetch.apply(this, arguments);
-        };
-
-        setInterval(function() {
-            var videos = document.querySelectorAll('video');
-            videos.forEach(function(v) {
-                if (v.src && isValidStream(v.src)) {
-                    window.flutter_inappwebview.callHandler('mediaSniffed', v.src);
-                }
-                var sources = v.querySelectorAll('source');
-                sources.forEach(function(s) {
-                    if (s.src && isValidStream(s.src)) {
-                        window.flutter_inappwebview.callHandler('mediaSniffed', s.src);
-                    }
-                });
-            });
-        }, 1500);
-    })();
-  """;
 
   @override
   void initState() {
@@ -189,7 +140,6 @@ class _PlayerPageState extends State<PlayerPage> {
       if (_isDirectVideo(url)) {
         await _initPlayer(url);
       } else {
-        // 进入网页模式，等待监听
         setState(() {
           _isWebViewMode = true;
           _loading = false;
@@ -213,18 +163,26 @@ class _PlayerPageState extends State<PlayerPage> {
     });
 
     try {
+      // 核心修复：带上 Referer 和 WebView 抓到的 Cookie
+      final headers = {
+        'Referer': _resolvedUrl ?? widget.episodeUrl,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      };
+      if (_webViewCookies != null && _webViewCookies!.isNotEmpty) {
+        headers['Cookie'] = _webViewCookies!;
+      }
+
       final c = VideoPlayerController.networkUrl(
         Uri.parse(url),
-        httpHeaders: {
-          'Referer': widget.episodeUrl, // 防盗链绕过
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        },
+        httpHeaders: headers,
       );
       await c.initialize();
+      
       if (!mounted) {
         await c.dispose();
         return;
       }
+      
       setState(() {
         _controller = c;
         _loading = false;
@@ -274,7 +232,7 @@ class _PlayerPageState extends State<PlayerPage> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _error = '该媒体流暂不支持直接播放（可能受加密或跨域限制保护）。已自动退回网页模式。';
+          _error = '媒体流解析失败：该资源可能受 DRM 保护或需要高级鉴权，已退回网页模式。\n($e)';
           _loading = false;
           _isWebViewMode = true;
         });
@@ -282,10 +240,18 @@ class _PlayerPageState extends State<PlayerPage> {
     }
   }
 
-  // 处理监听回调
-  void _handleSniffedUrl(String url) {
+  void _handleSniffedUrl(String url, InAppWebViewController controller) async {
     if (url.isEmpty || !url.startsWith('http')) return;
+    if (!url.contains('.mp4') && !url.contains('.m3u8')) return;
+    if (url.startsWith('blob:') || url.startsWith('data:')) return;
+
     if (!_sniffedUrls.contains(url)) {
+      // 抓取网页当前 Cookie
+      final cookies = await CookieManager.instance().getCookies(url: WebUri(url));
+      if (cookies.isNotEmpty) {
+        _webViewCookies = cookies.map((c) => '${c.name}=${c.value}').join('; ');
+      }
+
       setState(() {
         _sniffedUrls.add(url);
       });
@@ -713,7 +679,7 @@ class _PlayerPageState extends State<PlayerPage> {
     );
   }
 
-  // ====== 内置网页播放器及媒体流监听 ======
+  // ====== 内置网页播放器及原生接管 ======
   Widget _buildWebViewPlayer() {
     if (_resolvedUrl == null) return const Text('找不到播放地址', style: TextStyle(color: Colors.white));
     return Stack(
@@ -726,74 +692,49 @@ class _PlayerPageState extends State<PlayerPage> {
             allowsInlineMediaPlayback: true,
             useHybridComposition: true,
           ),
-          onWebViewCreated: (controller) {
-            // 注册监听回调
-            controller.addJavaScriptHandler(
-              handlerName: 'mediaSniffed',
-              callback: (args) {
-                if (args.isNotEmpty) {
-                  _handleSniffedUrl(args[0].toString());
-                }
-              },
-            );
-          },
-          onLoadStop: (controller, url) async {
-            // 页面加载完成后注入监听脚本
-            await controller.evaluateJavascript(source: _sniffJs);
+          // 核心：原生层网络拦截
+          onLoadResource: (controller, resource) {
+            final url = resource.url.toString();
+            _handleSniffedUrl(url, controller);
           },
         ),
         
-        // 悬浮监听结果按钮
+        // 接管横幅
         if (_sniffedUrls.isNotEmpty)
           Positioned(
-            bottom: 30,
-            right: 20,
-            child: FloatingActionButton.extended(
-              onPressed: () {
-                showModalBottomSheet(
-                  context: context,
-                  builder: (ctx) => Column(
-                    mainAxisSize: MainAxisSize.min,
+            top: MediaQuery.of(context).padding.top + kToolbarHeight,
+            left: 16,
+            right: 16,
+            child: Material(
+              color: Colors.deepPurpleAccent,
+              borderRadius: BorderRadius.circular(8),
+              elevation: 4,
+              child: InkWell(
+                onTap: () {
+                  // 默认选第一个 m3u8 或 mp4 接管
+                  String bestUrl = _sniffedUrls.first;
+                  for (var u in _sniffedUrls) {
+                    if (u.contains('.m3u8')) { bestUrl = u; break; }
+                  }
+                  _initPlayer(bestUrl);
+                },
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  child: Row(
                     children: [
-                      const Padding(
-                        padding: EdgeInsets.all(16),
+                      const Icon(Icons.play_circle_fill, color: Colors.white),
+                      const SizedBox(width: 12),
+                      const Expanded(
                         child: Text(
-                          '检测到以下公开媒体流（仅支持无 DRM 保护的内容）',
-                          style: TextStyle(fontSize: 12, color: Colors.grey),
+                          '已捕获到视频媒体流\n点击使用内置播放器无缝播放',
+                          style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
                         ),
                       ),
-                      Flexible(
-                        child: ListView.builder(
-                          shrinkWrap: true,
-                          itemCount: _sniffedUrls.length,
-                          itemBuilder: (_, i) {
-                            final url = _sniffedUrls.elementAt(i);
-                            final isHls = url.toLowerCase().contains('.m3u8');
-                            return ListTile(
-                              leading: Icon(
-                                isHls ? Icons.stream : Icons.movie,
-                                color: Colors.deepPurpleAccent,
-                              ),
-                              title: Text(
-                                isHls ? 'HLS 媒体流 (m3u8)' : '视频流',
-                                style: const TextStyle(fontWeight: FontWeight.bold),
-                              ),
-                              subtitle: Text(url, maxLines: 1, overflow: TextOverflow.ellipsis),
-                              onTap: () {
-                                Navigator.pop(ctx);
-                                _initPlayer(url); // 切换到内置播放器
-                              },
-                            );
-                          },
-                        ),
-                      ),
+                      const Icon(Icons.arrow_forward_ios, color: Colors.white, size: 14),
                     ],
                   ),
-                );
-              },
-              backgroundColor: Colors.deepPurpleAccent,
-              icon: const Icon(Icons.radar, color: Colors.white),
-              label: Text('发现 ${_sniffedUrls.length} 个媒体流', style: const TextStyle(color: Colors.white)),
+                ),
+              ),
             ),
           ),
       ],

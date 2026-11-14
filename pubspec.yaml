@@ -18,18 +18,17 @@ dependencies:
   url_launcher: ^6.3.1
   video_player: ^2.9.5
   gbk_codec: ^0.4.0
+  flutter_inappwebview: ^6.1.5
+  flutter_local_notifications: ^18.0.1
+  webdav_client: ^1.2.1
+  synchronized: ^3.1.0+1
   file_picker: ^8.0.0+1
-  timezone: ^0.9.4
   share_plus: ^10.1.1
+  
+  # 新增：语音、画中画、DLNA投屏
   speech_to_text: ^7.0.0
-  fl_pip: ^2.1.0
-  dlna_dart: ^1.0.4
-
-  # === 以下为精确锁定版本（去掉 ^）防未来解析冲突 ===
-  flutter_inappwebview: 6.1.5
-  flutter_local_notifications: 18.0.1
-  webdav_client: 1.2.1
-  synchronized: 3.1.0+1
+  fl_pip: ^3.2.3
+  media_cast_dlna: ^0.3.1
 
 dev_dependencies:
   flutter_test:

@@ -12,8 +12,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:fl_pip/fl_pip.dart';
-import 'package:dlna_dart/dlna.dart';
-import 'package:dlna_dart/dlna_device.dart';
+import 'package:media_cast_dlna/media_cast_dlna.dart'; // 替换了 dlna_dart
 import '../models/rule.dart';
 import '../services/xpath_service.dart';
 import '../services/storage_service.dart';
@@ -52,13 +51,13 @@ class _PlayerPageState extends State<PlayerPage> {
   Timer? _sleepTimer;
   int _sleepMinutesRemaining = 0;
 
+  // 弹幕与 OP/ED 配置
   List<DanmakuItem> _danmakus = [];
   final _danmakuController = TextEditingController();
   bool _showDanmakuInput = false;
   bool _danmakuEnabled = true;
   List<String> _blockWords = [];
   double _danmakuOpacity = 1.0;
-
   Duration? _opEndTime;
   bool _showSkipOpBtn = false;
 
@@ -68,12 +67,9 @@ class _PlayerPageState extends State<PlayerPage> {
   @override
   void initState() {
     super.initState();
-    // 初始化画中画事件
     FlPip.initialize();
     FlPip.onPipChanged = (isPip) {
-      if (!isPip && mounted) {
-         // 如果从画中画回到全屏
-      }
+      // 退出画中画时的逻辑处理
     };
     _init();
   }
@@ -144,15 +140,16 @@ class _PlayerPageState extends State<PlayerPage> {
     }
   }
 
-  // ========== DLNA 投屏 ==========
+  // ========== 新增：基于 media_cast_dlna 的投屏 ==========
   Future<void> _castToDevice() async {
     if (_resolvedUrl == null) return;
     
     showDialog(context: context, barrierDismissible: false, builder: (_) => const Center(child: CircularProgressIndicator()));
-    final dlna = DLNAManager();
-    List<DLNADevice> devices = [];
+    
+    List<MediaCastDevice> devices = [];
     try {
-      devices = await dlna.discover();
+      final discovery = MediaCastDlnaDiscovery();
+      devices = await discovery.discover(timeout: const Duration(seconds: 5));
     } catch (e) {
       debugPrint('DLNA search failed: $e');
     }
@@ -174,17 +171,18 @@ class _PlayerPageState extends State<PlayerPage> {
             return ListTile(
               leading: const Icon(Icons.tv),
               title: Text(device.name),
-              subtitle: Text(device.ip ?? ''),
+              subtitle: Text(device.ipAddress),
               onTap: () async {
                 Navigator.pop(ctx);
                 showDialog(context: context, barrierDismissible: false, builder: (_) => const Center(child: CircularProgressIndicator()));
                 try {
-                  // 核心：推送视频直链到电视
-                  await dlna.pushVideo(device, _resolvedUrl!);
+                  final controller = MediaCastController(device);
+                  await controller.cast(_resolvedUrl!);
+                  
                   if (mounted) {
                     Navigator.pop(context);
                     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已推送到电视')));
-                    _controller?.pause(); // 本地暂停
+                    _controller?.pause();
                   }
                 } catch (e) {
                   if (mounted) {
@@ -204,14 +202,13 @@ class _PlayerPageState extends State<PlayerPage> {
   void _enterPip() async {
     if (_controller == null || !_controller!.value.isInitialized) return;
     try {
-      // 注意：fl_pip 需要 Android 8.0+ 才原生支持，Android 7 上会抛异常，我们用 try-catch 包住
       await FlPip.show();
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('画中画不可用: 需要 Android 8.0+')));
     }
   }
 
-  // ========== 弹幕与 OP 逻辑 ==========
+  // ========== 弹幕与 OP/ED 逻辑 ==========
   Future<void> _markOpEnd() async {
     if (_controller == null) return;
     final current = _controller!.value.position;

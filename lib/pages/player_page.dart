@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart'; // 核心修复：补全缺失的 widgets 导入
 import 'package:flutter/rendering.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
@@ -14,6 +15,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:volume_controller/volume_controller.dart';
 import 'package:dlna_dart/dlna.dart';
+import 'package:dlna_dart/dlna_device.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import '../models/rule.dart';
 import '../services/xpath_service.dart';
@@ -59,8 +61,8 @@ class _PlayerPageState extends State<PlayerPage> {
   
   // ====== 网页媒体流监听与接管 ======
   Set<String> _sniffedUrls = {}; 
-  bool _isWebViewMode = false; // 当前是否处于解析网页模式
-  String? _webViewCookies; // 抓取的 Cookie 用于原生播放器
+  bool _isWebViewMode = false; 
+  String? _webViewCookies; 
 
   double _playbackSpeed = 1.0;
   Timer? _sleepTimer;
@@ -100,7 +102,9 @@ class _PlayerPageState extends State<PlayerPage> {
   }
 
   Future<void> _init() async {
+    // 核心修复：VolumeController 单例设置
     VolumeController.instance.showSystemUI = false;
+    
     final prefs = await SharedPreferences.getInstance();
     _playbackSpeed = prefs.getDouble('playback_speed') ?? 1.0;
     _danmakuEnabled = prefs.getBool('danmaku_enabled') ?? true;
@@ -163,7 +167,6 @@ class _PlayerPageState extends State<PlayerPage> {
     });
 
     try {
-      // 核心修复：带上 Referer 和 WebView 抓到的 Cookie
       final headers = {
         'Referer': _resolvedUrl ?? widget.episodeUrl,
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -246,7 +249,6 @@ class _PlayerPageState extends State<PlayerPage> {
     if (url.startsWith('blob:') || url.startsWith('data:')) return;
 
     if (!_sniffedUrls.contains(url)) {
-      // 抓取网页当前 Cookie
       final cookies = await CookieManager.instance().getCookies(url: WebUri(url));
       if (cookies.isNotEmpty) {
         _webViewCookies = cookies.map((c) => '${c.name}=${c.value}').join('; ');
@@ -400,7 +402,9 @@ class _PlayerPageState extends State<PlayerPage> {
     _dragStartY = details.localPosition.dy;
     _isDragging = true;
     _gestureTipTimer?.cancel();
+    // 核心修复：ScreenBrightness() 实例调用
     if (details.localPosition.dx < MediaQuery.of(context).size.width / 2) ScreenBrightness().current.then((val) => _startBrightness = val);
+    // 核心修复：VolumeController.instance 调用
     else VolumeController.instance.getVolume().then((val) => _startVolume = val);
   }
   void _onVerticalDragUpdate(DragUpdateDetails details) {
@@ -408,10 +412,12 @@ class _PlayerPageState extends State<PlayerPage> {
     final ratio = (_dragStartY - details.localPosition.dy) / (MediaQuery.of(context).size.height / 2);
     if (details.localPosition.dx < MediaQuery.of(context).size.width / 2) {
       double newVal = (_startBrightness + ratio).clamp(0.0, 1.0);
+      // 核心修复：ScreenBrightness() 实例调用
       ScreenBrightness().setScreenBrightness(newVal);
       setState(() => _gestureTip = '亮度 ${(newVal * 100).toInt()}%');
     } else {
       double newVal = (_startVolume + ratio).clamp(0.0, 1.0);
+      // 核心修复：VolumeController.instance 调用
       VolumeController.instance.setVolume(newVal);
       setState(() => _gestureTip = '音量 ${(newVal * 100).toInt()}%');
     }
@@ -609,6 +615,7 @@ class _PlayerPageState extends State<PlayerPage> {
        SharedPreferences.getInstance().then((prefs) => prefs.setInt(_progressKey, _controller!.value.position.inMilliseconds));
     }
     _controller?.removeListener(() {}); _controller?.dispose(); _controller = null;
+    // 核心修复：ScreenBrightness() 实例调用
     ScreenBrightness().resetScreenBrightness();
     super.dispose();
   }
@@ -692,14 +699,12 @@ class _PlayerPageState extends State<PlayerPage> {
             allowsInlineMediaPlayback: true,
             useHybridComposition: true,
           ),
-          // 核心：原生层网络拦截
           onLoadResource: (controller, resource) {
             final url = resource.url.toString();
             _handleSniffedUrl(url, controller);
           },
         ),
         
-        // 接管横幅
         if (_sniffedUrls.isNotEmpty)
           Positioned(
             top: MediaQuery.of(context).padding.top + kToolbarHeight,
@@ -711,7 +716,6 @@ class _PlayerPageState extends State<PlayerPage> {
               elevation: 4,
               child: InkWell(
                 onTap: () {
-                  // 默认选第一个 m3u8 或 mp4 接管
                   String bestUrl = _sniffedUrls.first;
                   for (var u in _sniffedUrls) {
                     if (u.contains('.m3u8')) { bestUrl = u; break; }

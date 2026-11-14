@@ -11,8 +11,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:fl_pip/fl_pip.dart';
-import 'package:media_cast_dlna/media_cast_dlna.dart'; // 替换了 dlna_dart
+import 'package:media_cast_dlna/media_cast_dlna.dart';
 import '../models/rule.dart';
 import '../services/xpath_service.dart';
 import '../services/storage_service.dart';
@@ -67,10 +66,6 @@ class _PlayerPageState extends State<PlayerPage> {
   @override
   void initState() {
     super.initState();
-    FlPip.initialize();
-    FlPip.onPipChanged = (isPip) {
-      // 退出画中画时的逻辑处理
-    };
     _init();
   }
 
@@ -140,7 +135,7 @@ class _PlayerPageState extends State<PlayerPage> {
     }
   }
 
-  // ========== 新增：基于 media_cast_dlna 的投屏 ==========
+  // ========== DLNA 投屏 ==========
   Future<void> _castToDevice() async {
     if (_resolvedUrl == null) return;
     
@@ -196,16 +191,6 @@ class _PlayerPageState extends State<PlayerPage> {
         );
       },
     );
-  }
-
-  // ========== 画中画 ==========
-  void _enterPip() async {
-    if (_controller == null || !_controller!.value.isInitialized) return;
-    try {
-      await FlPip.show();
-    } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('画中画不可用: 需要 Android 8.0+')));
-    }
   }
 
   // ========== 弹幕与 OP/ED 逻辑 ==========
@@ -457,11 +442,6 @@ class _PlayerPageState extends State<PlayerPage> {
             icon: const Icon(Icons.screenshot_monitor),
             tooltip: '投屏',
             onPressed: _controller != null && _controller!.value.isInitialized ? _castToDevice : null,
-          ),
-          IconButton(
-            icon: const Icon(Icons.picture_in_picture_alt),
-            tooltip: '画中画',
-            onPressed: _enterPip,
           ),
           IconButton(
             icon: const Icon(Icons.camera_alt_outlined),

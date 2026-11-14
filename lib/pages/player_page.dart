@@ -50,7 +50,6 @@ class _PlayerPageState extends State<PlayerPage> {
   Timer? _sleepTimer;
   int _sleepMinutesRemaining = 0;
 
-  // 弹幕与 OP/ED 配置
   List<DanmakuItem> _danmakus = [];
   final _danmakuController = TextEditingController();
   bool _showDanmakuInput = false;
@@ -135,16 +134,16 @@ class _PlayerPageState extends State<PlayerPage> {
     }
   }
 
-  // ========== DLNA 投屏 ==========
+  // ========== 基于 media_cast_dlna 的投屏 ==========
   Future<void> _castToDevice() async {
     if (_resolvedUrl == null) return;
     
     showDialog(context: context, barrierDismissible: false, builder: (_) => const Center(child: CircularProgressIndicator()));
     
-    List<MediaCastDevice> devices = [];
+    List<DlnaDevice> devices = [];
     try {
-      final discovery = MediaCastDlnaDiscovery();
-      devices = await discovery.discover(timeout: const Duration(seconds: 5));
+      final api = MediaCastDlnaApi();
+      devices = await api.getDiscoveredDevices();
     } catch (e) {
       debugPrint('DLNA search failed: $e');
     }
@@ -165,14 +164,16 @@ class _PlayerPageState extends State<PlayerPage> {
             final device = devices[i];
             return ListTile(
               leading: const Icon(Icons.tv),
-              title: Text(device.name),
-              subtitle: Text(device.ipAddress),
+              title: Text(device.friendlyName),
+              subtitle: Text(device.deviceType),
               onTap: () async {
                 Navigator.pop(ctx);
                 showDialog(context: context, barrierDismissible: false, builder: (_) => const Center(child: CircularProgressIndicator()));
                 try {
-                  final controller = MediaCastController(device);
-                  await controller.cast(_resolvedUrl!);
+                  final api = MediaCastDlnaApi();
+                  // 核心：使用 API 的方法推送媒体链接
+                  await api.setMediaUri(device, _resolvedUrl!);
+                  await api.play(device);
                   
                   if (mounted) {
                     Navigator.pop(context);
@@ -561,7 +562,6 @@ class _PlayerPageState extends State<PlayerPage> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // ====== 高能进度条 ======
                   if (_controller!.value.duration.inSeconds > 0)
                     DanmakuHeatmap(
                       danmakus: _danmakus,

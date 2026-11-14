@@ -32,9 +32,13 @@ jobs:
           cat << 'EOF' > android/app/src/main/AndroidManifest.xml
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.INTERNET"/>
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+              <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
+              <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE"/>
               <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
               <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
               <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+
               <application
                   android:label="Anime Aggregator"
                   android:name="${applicationName}"
@@ -55,6 +59,7 @@ jobs:
                       </intent-filter>
                   </activity>
                   <meta-data android:name="flutterEmbedding" android:value="2" />
+                  
                   <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver" />
                   <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver">
                       <intent-filter>
@@ -62,6 +67,8 @@ jobs:
                           <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
                       </intent-filter>
                   </receiver>
+
+                  <service android:name="org.jupnp.android.AndroidUpnpServiceImpl"/>
               </application>
           </manifest>
           EOF

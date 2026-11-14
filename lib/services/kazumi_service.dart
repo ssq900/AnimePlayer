@@ -18,9 +18,7 @@ class KazumiService {
     for (final url in _indexUrls) {
       try {
         final resp = await http.get(Uri.parse(url), headers: _headers).timeout(const Duration(seconds: 10));
-        if (resp.statusCode == 200) {
-          return (jsonDecode(resp.body) as List).cast<Map<String, dynamic>>();
-        }
+        if (resp.statusCode == 200) return (jsonDecode(resp.body) as List).cast<Map<String, dynamic>>();
         errors.add('${Uri.parse(url).host} 状态码: ${resp.statusCode}');
       } catch (e) {
         errors.add('${Uri.parse(url).host} 异常: $e');
@@ -36,12 +34,14 @@ class KazumiService {
       try {
         final resp = await http.get(Uri.parse(url), headers: _headers).timeout(const Duration(seconds: 10));
         if (resp.statusCode == 200) return jsonDecode(resp.body) as Map<String, dynamic>;
-      } catch (e) { errors.add('${Uri.parse(url).host} 异常: $e'); }
+        errors.add('${Uri.parse(url).host} 状态码: ${resp.statusCode}');
+      } catch (e) {
+        errors.add('${Uri.parse(url).host} 异常: $e');
+      }
     }
     throw Exception('规则详情拉取失败:\n${errors.join('\n')}');
   }
 
-  /// 直接提取并映射 Kazumi 原生 XPath 字段
   Map<String, String> convertKazumiRule(Map<String, dynamic> kRule) {
     String baseUrl = kRule['searchURL'] ?? kRule['baseUrl'] ?? kRule['baseURL'] ?? '';
     baseUrl = baseUrl.replaceAll('@keyword', '{keyword}');
@@ -51,7 +51,6 @@ class KazumiService {
 
     final searchSelector = kRule['searchList'] ?? kRule['searchResult'] ?? '';
     final animeLinkSelector = kRule['searchName'] ?? kRule['searchResultItem'] ?? '';
-
     String episodeList = kRule['chapterRoads'] ?? kRule['episodeList'] ?? '';
     String episodeLink = 'video, iframe, source';
 

@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
-import 'package:html/parser.dart' as html_parser;
-import 'package:html/dom.dart';
+import 'package:html/parser.dart' as html_parser; // 用于补全未闭合标签
 import 'package:xpath_for_html/xpath_for_html.dart';
+import 'package:xml/xml.dart' as xml;
 import '../models/rule.dart';
 
 class XPathService {
@@ -27,7 +27,6 @@ class XPathService {
           if (completer.isCompleted) return;
           try {
             if (waitForSelector != null && waitForSelector.isNotEmpty) {
-              // 对于 XPath，我们可以简单地检查页面是否加载完毕（通过检查 body 是否有子元素）
               final safeSelector = jsonEncode(waitForSelector.startsWith('//') ? 'body' : waitForSelector);
               for (int i = 0; i < 15; i++) { 
                 if (completer.isCompleted) return;
@@ -72,7 +71,16 @@ class XPathService {
     }
   }
 
-  Document _parseHtml(String htmlText) => html_parser.parse(htmlText);
+  // 辅助方法：清洗 HTML 以保证 XML 解析器能处理
+  String _cleanHtmlForXml(String html) {
+    try {
+      // 使用 html 包解析后重新输出，能自动补全所有未闭合的标签（如 <img> 变成 <img />）
+      final doc = html_parser.parse(html);
+      return doc.outerHtml;
+    } catch (_) {
+      return html;
+    }
+  }
 
   Future<List<SearchResult>> search(AnimeRule rule, String keyword) async {
     if (rule.searchSelector.trim().isEmpty) {
@@ -88,47 +96,57 @@ class XPathService {
       searchUrl = '$searchUrl${sep}wd=$encoded';
     }
 
-    final htmlText = await fetchHtml(searchUrl);
+    final rawHtml = await fetchHtml(searchUrl);
+    // 核心步骤：将网页源码标准 XML 化，否则 xml 包会报错
+    final safeHtml = _cleanHtmlForXml(rawHtml);
     
-    // 核心替换：使用原生 XPath 查询
-    final xpath = XPath.html(htmlText);
-    final results = xpath.query(rule.searchSelector).toList();
+    final xpath = XPath.html(safeHtml);
+    final results = xpath.query(rule.searchSelector);
     
-    if (results.isEmpty) {
+    if (results.nodes.isEmpty) {
       throw Exception('规则不匹配: 网页中未找到容器 "${rule.searchSelector}"，可能网站已改版');
     }
 
-    // 提取所有条目
-    List<dynamic> items = [];
+    List<xml.XmlElement> items = [];
+    
+    // 如果配置了子选择器，尝试从容器中找子项
     if (rule.animeLinkSelector.isNotEmpty) {
       try {
         final subQuery = xpath.query(rule.animeLinkSelector);
-        // 这里简化处理，实际可能需要从每个匹配的容器中继续查询
-        items = subQuery.toList(); 
+        for (var node in subQuery.nodes) {
+          if (node is xml.XmlElement) items.add(node);
+        }
       } catch (_) {}
     }
-    
-    // 如果子查询失败，直接用结果本身
-    if (items.isEmpty) items = results;
 
-    return items.map((item) {
-      // xpath_for_html 返回的可能不是标准的 Element，需要做类型转换或兼容处理
-      Element? el;
-      if (item is Element) {
-        el = item;
-      } else if (item is String) {
-        // 某些库可能返回文本节点
-        return SearchResult(title: item.trim(), link: '', rule: rule);
+    // 兜底：如果没找到子项，直接把容器当作条目
+    if (items.isEmpty) {
+      for (var node in results.nodes) {
+        if (node is xml.XmlElement) items.add(node);
       }
+    }
+
+    return items.map((el) {
+      // xml 包提取数据的方法：getAttribute 和 innerText
+      final href = el.getAttribute('href') ?? el.getAttribute('src') ?? '';
+      final title = el.innerText.replaceAll(RegExp(r'\s+'), ' ').trim();
       
-      if (el == null) return null;
-      
-      final anchor = el.localName == 'a' ? el : el.querySelector('a');
-      final title = _cleanText(anchor?.attributes['title'] ?? anchor?.text ?? el.text);
-      final href = anchor?.attributes['href'] ?? '';
+      // 如果本身是 a 标签没有内部文字，尝试找它里面的第一个 a 标签
+      if (el.name.local != 'a' && href.isEmpty) {
+        try {
+          final innerA = el.findElements('a').firstOrNull;
+          if (innerA != null) {
+            return SearchResult(
+              title: innerA.innerText.replaceAll(RegExp(r'\s+'), ' ').trim(),
+              link: _absolute(rule.baseUrl, innerA.getAttribute('href') ?? ''),
+              rule: rule
+            );
+          }
+        } catch (_) {}
+      }
+
       return SearchResult(title: title, link: _absolute(rule.baseUrl, href), rule: rule);
     })
-    .whereType<SearchResult>()
     .where((r) {
       if (r.link.isEmpty || r.title.isEmpty) return false;
       final uri = Uri.tryParse(r.link);
@@ -148,39 +166,34 @@ class XPathService {
   Future<List<EpisodeItem>> fetchEpisodes(AnimeRule rule, String detailUrl) async {
     if (rule.episodeListSelector.trim().isEmpty) throw Exception('规则错误: 剧集列表选择器为空');
     
-    final htmlText = await fetchHtml(detailUrl);
-    final xpath = XPath.html(htmlText);
-    final results = xpath.query(rule.episodeListSelector).toList();
+    final rawHtml = await fetchHtml(detailUrl);
+    final safeHtml = _cleanHtmlForXml(rawHtml);
+    final xpath = XPath.html(safeHtml);
+    final results = xpath.query(rule.episodeListSelector);
     
-    if (results.isEmpty) throw Exception('网页中未找到剧集列表，可能规则失效');
+    if (results.nodes.isEmpty) throw Exception('网页中未找到剧集列表，可能规则失效');
     
-    return results.map((item) {
-      Element? el;
-      if (item is Element) el = item;
-      if (el == null) return null;
-      
-      final anchor = el.localName == 'a' ? el : el.querySelector('a');
-      final title = _cleanText(anchor?.text ?? el.text);
-      final href = anchor?.attributes['href'] ?? '';
+    return results.nodes.whereType<xml.XmlElement>().map((el) {
+      final href = el.getAttribute('href') ?? '';
+      final title = el.innerText.replaceAll(RegExp(r'\s+'), ' ').trim();
       return EpisodeItem(title: title, link: _absolute(rule.baseUrl, href));
-    }).whereType<EpisodeItem>().where((e) => e.link.isNotEmpty).toList();
+    }).where((e) => e.link.isNotEmpty).toList();
   }
 
   Future<String> resolveEpisodeLink(AnimeRule rule, String episodeUrl) async {
     if (rule.episodeLinkSelector.trim().isEmpty) return episodeUrl;
     
-    final htmlText = await fetchHtml(episodeUrl);
-    final xpath = XPath.html(htmlText);
-    final results = xpath.query(rule.episodeLinkSelector).toList();
+    final rawHtml = await fetchHtml(episodeUrl);
+    final safeHtml = _cleanHtmlForXml(rawHtml);
+    final xpath = XPath.html(safeHtml);
+    final results = xpath.query(rule.episodeLinkSelector);
     
-    if (results.isEmpty) throw Exception('网页中未找到视频播放地址');
+    if (results.nodes.isEmpty) throw Exception('网页中未找到视频播放地址');
 
-    Element? el;
-    if (results.first is Element) el = results.first;
+    final el = results.nodes.whereType<xml.XmlElement>().firstOrNull;
     if (el == null) return episodeUrl;
 
-    final a = el.localName == 'a' ? el : el.querySelector('a');
-    final href = a?.attributes['href'] ?? el.attributes['src'] ?? '';
+    final href = el.getAttribute('href') ?? el.getAttribute('src') ?? '';
     if (href.isEmpty) return episodeUrl;
     return _absolute(rule.baseUrl, href);
   }
@@ -197,6 +210,4 @@ class XPathService {
       return '';
     }
   }
-
-  String _cleanText(String? t) => (t ?? '').replaceAll(RegExp(r'\s+'), ' ').trim();
 }

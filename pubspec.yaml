@@ -28,6 +28,7 @@ dependencies:
   dlna_dart: ^0.1.2
   screen_brightness: ^2.0.0
   volume_controller: ^3.3.0
+  xpath_for_html: ^1.0.2
 
 dev_dependencies:
   flutter_test:

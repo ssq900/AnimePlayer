@@ -19,8 +19,7 @@ class KazumiService {
       try {
         final resp = await http.get(Uri.parse(url), headers: _headers).timeout(const Duration(seconds: 10));
         if (resp.statusCode == 200) {
-          final List<dynamic> data = jsonDecode(resp.body);
-          return data.cast<Map<String, dynamic>>();
+          return (jsonDecode(resp.body) as List).cast<Map<String, dynamic>>();
         }
         errors.add('${Uri.parse(url).host} 状态码: ${resp.statusCode}');
       } catch (e) {
@@ -33,63 +32,16 @@ class KazumiService {
   Future<Map<String, dynamic>> fetchRuleDetail(String fileName) async {
     final urls = _indexUrls.map((u) => u.replaceAll('index.json', fileName)).toList();
     List<String> errors = [];
-
     for (final url in urls) {
       try {
         final resp = await http.get(Uri.parse(url), headers: _headers).timeout(const Duration(seconds: 10));
-        if (resp.statusCode == 200) {
-          return jsonDecode(resp.body) as Map<String, dynamic>;
-        }
-        errors.add('${Uri.parse(url).host} 状态码: ${resp.statusCode}');
-      } catch (e) {
-        errors.add('${Uri.parse(url).host} 异常: $e');
-      }
+        if (resp.statusCode == 200) return jsonDecode(resp.body) as Map<String, dynamic>;
+      } catch (e) { errors.add('${Uri.parse(url).host} 异常: $e'); }
     }
     throw Exception('规则详情拉取失败:\n${errors.join('\n')}');
   }
 
-  String _xpathToCss(String xpath) {
-    if (xpath.isEmpty) return '';
-    String css = xpath.trim();
-    if (css.startsWith('.') || css.startsWith('#')) return css;
-
-    // 1. 提取 Class
-    final regClass = RegExp(r'''//\w+\[@class=["']([^"']+)["']\]''');
-    if (regClass.hasMatch(css)) {
-      final match = regClass.firstMatch(css);
-      return '.${match!.group(1)!.replaceAll(' ', '.')}';
-    }
-
-    // 2. 提取 ID
-    final regId = RegExp(r'''//\w+\[@id=["']([^"']+)["']\]''');
-    if (regId.hasMatch(css)) {
-      final match = regId.firstMatch(css);
-      return '#${match!.group(1)}';
-    }
-
-    // 3. 其他属性
-    css = css.replaceAllMapped(RegExp(r'''//(\w+)\[@([^=]+)="([^"]+)"\]'''), (m) {
-      return '${m[1]}[${m[2]}="${m[3]}"]';
-    });
-
-    // 4. 强行删除数字索引
-    css = css.replaceAll(RegExp(r'\[\d+\]'), '');
-    css = css.replaceAll(RegExp(r':nth-of-type\(\d+\)'), '');
-
-    css = css.replaceAll('//', ' ');
-    css = css.replaceAll('/', ' > ');
-    css = css.replaceAll(RegExp(r'\[@.*?\]'), '');
-    css = css.replaceAll(RegExp(r'\s+'), ' ').trim();
-    if (css.startsWith('>')) css = css.substring(1).trim();
-    
-    // 【核心修复】：如果清理后只剩下一堆 div 标签（没有任何类名和 ID），判定为垃圾规则，直接废弃
-    if (css.isEmpty || !css.contains('.') && !css.contains('#')) {
-      return 'UNSUPPORTED_RULE'; 
-    }
-    
-    return css;
-  }
-
+  /// 直接提取并映射 Kazumi 原生 XPath 字段
   Map<String, String> convertKazumiRule(Map<String, dynamic> kRule) {
     String baseUrl = kRule['searchURL'] ?? kRule['baseUrl'] ?? kRule['baseURL'] ?? '';
     baseUrl = baseUrl.replaceAll('@keyword', '{keyword}');
@@ -97,32 +49,28 @@ class KazumiService {
       baseUrl = kRule['baseURL'] ?? kRule['baseUrl'] ?? baseUrl;
     }
 
-    final searchSelector = _xpathToCss(kRule['searchList'] ?? kRule['searchResult'] ?? '');
-    final animeLinkSelector = _xpathToCss(kRule['searchName'] ?? kRule['searchResultItem'] ?? '');
-    String episodeList = _xpathToCss(kRule['chapterRoads'] ?? kRule['episodeList'] ?? '');
+    final searchSelector = kRule['searchList'] ?? kRule['searchResult'] ?? '';
+    final animeLinkSelector = kRule['searchName'] ?? kRule['searchResultItem'] ?? '';
+
+    String episodeList = kRule['chapterRoads'] ?? kRule['episodeList'] ?? '';
     String episodeLink = 'video, iframe, source';
 
     final chapter = kRule['chapter'];
     if (chapter != null && chapter is Map) {
-      episodeList = _xpathToCss(chapter['list'] ?? kRule['chapterRoads'] ?? '');
-      final customLink = _xpathToCss(chapter['link'] ?? kRule['chapterResult'] ?? '');
-      if (customLink.isNotEmpty && customLink != 'UNSUPPORTED_RULE') episodeLink = customLink;
+      episodeList = chapter['list'] ?? kRule['chapterRoads'] ?? '';
+      final customLink = chapter['link'] ?? kRule['chapterResult'] ?? '';
+      if (customLink.isNotEmpty) episodeLink = customLink;
     } else {
-      final customLink = _xpathToCss(kRule['chapterResult'] ?? kRule['episodeLink'] ?? '');
-      if (customLink.isNotEmpty && customLink != 'UNSUPPORTED_RULE') episodeLink = customLink;
-    }
-
-    // 如果搜索选择器是垃圾规则，直接抛出异常阻止导入
-    if (searchSelector == 'UNSUPPORTED_RULE' || searchSelector.isEmpty) {
-       throw Exception('该规则基于纯标签层级，无法转换为稳健的 CSS 选择器，已跳过。');
+      final customLink = kRule['chapterResult'] ?? kRule['episodeLink'] ?? '';
+      if (customLink.isNotEmpty) episodeLink = customLink;
     }
 
     return {
       'name': kRule['name'] ?? '未命名规则',
       'baseUrl': baseUrl,
       'searchSelector': searchSelector,
-      'animeLinkSelector': animeLinkSelector == 'UNSUPPORTED_RULE' ? 'a' : animeLinkSelector,
-      'episodeListSelector': episodeList == 'UNSUPPORTED_RULE' ? 'a' : episodeList,
+      'animeLinkSelector': animeLinkSelector,
+      'episodeListSelector': episodeList,
       'episodeLinkSelector': episodeLink,
     };
   }

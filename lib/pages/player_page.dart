@@ -171,9 +171,14 @@ class _PlayerPageState extends State<PlayerPage> {
                 showDialog(context: context, barrierDismissible: false, builder: (_) => const Center(child: CircularProgressIndicator()));
                 try {
                   final api = MediaCastDlnaApi();
-                  // 核心：使用 API 的方法推送媒体链接
-                  await api.setMediaUri(device, _resolvedUrl!);
-                  await api.play(device);
+                  // 核心修复：setMediaUri 需要 3 个参数，且必须传入 device.udn
+                  final metadata = VideoMetadata(title: widget.title);
+                  await api.setMediaUri(
+                    device.udn,
+                    Url(value: _resolvedUrl!),
+                    metadata,
+                  );
+                  await api.play(device.udn);
                   
                   if (mounted) {
                     Navigator.pop(context);

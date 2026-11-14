@@ -14,13 +14,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:volume_controller/volume_controller.dart';
 import 'package:dlna_dart/dlna.dart';
-import 'package:dlna_dart/dlna_device.dart';
 import '../models/rule.dart';
 import '../services/xpath_service.dart';
 import '../services/storage_service.dart';
 import '../widgets/danmaku_overlay.dart';
 import '../widgets/danmaku_heatmap.dart';
-import 'detail_page.dart'; // 换源跳转需要
+import 'detail_page.dart';
 
 // 简单的字幕数据类
 class SubtitleItem {
@@ -216,7 +215,6 @@ class _PlayerPageState extends State<PlayerPage> {
     }
 
     List<SearchResult> results = [];
-    // 用当前番剧名去其他源并发搜索
     final futures = otherRules.map((rule) async {
       try {
         final res = await _xpath.search(rule, widget.animeTitle);
@@ -229,7 +227,7 @@ class _PlayerPageState extends State<PlayerPage> {
     await Future.wait(futures);
     
     if (!mounted) return;
-    Navigator.pop(context); // 关掉 Loading
+    Navigator.pop(context);
 
     if (results.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('其他源未找到该番剧')));
@@ -263,8 +261,7 @@ class _PlayerPageState extends State<PlayerPage> {
                     subtitle: Text(r.rule.name),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: () {
-                      Navigator.pop(ctx); // 关掉弹窗
-                      // 替换当前页面为新源详情页
+                      Navigator.pop(ctx);
                       Navigator.pushReplacement(
                         context,
                         MaterialPageRoute(
@@ -439,57 +436,86 @@ class _PlayerPageState extends State<PlayerPage> {
     setState(() => _gestureTip = null);
   }
 
-  // ========== 其他功能 (投屏/弹幕/OP) ==========
+  // ========== 修复后的 DLNA 投屏 ==========
   Future<void> _castToDevice() async {
     if (_resolvedUrl == null) return;
+    
+    // 显示加载框
     showDialog(context: context, barrierDismissible: false, builder: (_) => const Center(child: CircularProgressIndicator()));
-    List<DLNADevice> devices = [];
+    
+    final searcher = DLNAManager();
     try {
-      final dlna = DLNAManager();
-      devices = await dlna.discover();
-    } catch (e) { debugPrint('DLNA search failed: $e'); }
-    if (mounted) Navigator.pop(context);
-
-    if (devices.isEmpty) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('未找到局域网内的投屏设备')));
-      return;
+      // 启动搜索，返回 DeviceManager
+      final manager = await searcher.start();
+      final Map<String, DLNADevice> deviceMap = {};
+      
+      // 监听设备流
+      final subscription = manager.devices.stream.listen((deviceList) {
+        deviceList.forEach((key, value) {
+          deviceMap[key] = value;
+        });
+      });
+      
+      // 等待 3 秒收集设备
+      await Future.delayed(const Duration(seconds: 3));
+      
+      if (!mounted) return;
+      Navigator.pop(context); // 关闭加载框
+      
+      // 停止搜索
+      searcher.stop();
+      await subscription.cancel();
+      
+      if (deviceMap.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('未找到局域网内的投屏设备')));
+        return;
+      }
+      
+      // 显示设备列表
+      showModalBottomSheet(
+        context: context,
+        builder: (ctx) => ListView.builder(
+          itemCount: deviceMap.length,
+          itemBuilder: (_, i) {
+            final device = deviceMap.values.elementAt(i);
+            return ListTile(
+              leading: const Icon(Icons.tv),
+              title: Text(device.info.friendlyName), // 使用正确的设备名称属性
+              subtitle: Text(device.info.modelName ?? ''), // 可以显示型号作为副标题
+              onTap: () async {
+                Navigator.pop(ctx); // 关闭底部弹窗
+                // 显示投屏加载框
+                showDialog(context: context, barrierDismissible: false, builder: (_) => const Center(child: CircularProgressIndicator()));
+                try {
+                  // 推送视频
+                  await device.setUrl(_resolvedUrl!, title: widget.title);
+                  await device.play();
+                  
+                  if (mounted) {
+                    Navigator.pop(context);
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已推送到电视')));
+                    _controller?.pause(); // 本地暂停
+                  }
+                } catch (e) {
+                  if (mounted) {
+                    Navigator.pop(context);
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('投屏失败: $e')));
+                  }
+                }
+              },
+            );
+          },
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context); // 关闭加载框
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('搜索设备失败: $e')));
+      }
     }
-
-    if (!mounted) return;
-    showModalBottomSheet(
-      context: context,
-      builder: (ctx) => ListView.builder(
-        itemCount: devices.length,
-        itemBuilder: (_, i) {
-          final device = devices[i];
-          return ListTile(
-            leading: const Icon(Icons.tv),
-            title: Text(device.name),
-            subtitle: Text(device.ip ?? ''),
-            onTap: () async {
-              Navigator.pop(ctx);
-              showDialog(context: context, barrierDismissible: false, builder: (_) => const Center(child: CircularProgressIndicator()));
-              try {
-                final dlna = DLNAManager();
-                await dlna.pushVideo(device, _resolvedUrl!);
-                if (mounted) {
-                  Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已推送到电视')));
-                  _controller?.pause();
-                }
-              } catch (e) {
-                if (mounted) {
-                  Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('投屏失败: $e')));
-                }
-              }
-            },
-          );
-        },
-      ),
-    );
   }
 
+  // ========== 其他功能 (弹幕/OP) ==========
   Future<void> _markOpEnd() async {
     if (_controller == null) return;
     final current = _controller!.value.position;
@@ -680,12 +706,7 @@ class _PlayerPageState extends State<PlayerPage> {
         elevation: 0,
         title: Text(widget.title, style: const TextStyle(fontSize: 16)),
         actions: [
-          // 新增：一键换源按钮
-          IconButton(
-            icon: const Icon(Icons.swap_horiz),
-            tooltip: '一键换源',
-            onPressed: _showChangeSourceSheet,
-          ),
+          IconButton(icon: const Icon(Icons.swap_horiz), tooltip: '一键换源', onPressed: _showChangeSourceSheet),
           IconButton(icon: const Icon(Icons.subtitles), tooltip: '加载字幕', onPressed: _loadSubtitleFile),
           IconButton(icon: const Icon(Icons.screenshot_monitor), tooltip: '投屏', onPressed: _controller != null && _controller!.value.isInitialized ? _castToDevice : null),
           IconButton(icon: const Icon(Icons.camera_alt_outlined), tooltip: '截图分享', onPressed: _controller != null && _controller!.value.isInitialized ? _shareScreenshot : null),
@@ -775,12 +796,7 @@ class _PlayerPageState extends State<PlayerPage> {
                   child: Text(
                     _currentSubtitleText!,
                     textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      shadows: [Shadow(color: Colors.black, blurRadius: 2, offset: Offset(1, 1))],
-                    ),
+                    style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold, shadows: [Shadow(color: Colors.black, blurRadius: 2, offset: Offset(1, 1))]),
                   ),
                 ),
               ),

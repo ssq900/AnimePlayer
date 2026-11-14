@@ -25,11 +25,15 @@ dependencies:
   file_picker: ^8.0.0+1
   share_plus: ^10.1.1
   
-  # 语音、投屏、画中画等扩展功能
+  # 语音、投屏
   speech_to_text: ^7.0.0
   dlna_dart: ^0.1.2
   
-  # 原生 XPath 解析引擎
+  # 手势控制必备（亮度与音量）
+  screen_brightness: ^2.0.0
+  volume_controller: ^3.3.0
+
+  # 原生 XPath 解析（配合 xml）
   xpath_for_html: ^1.0.2
   xml: ^6.5.0
 

@@ -4,7 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
-import 'package:flutter/widgets.dart'; // 核心修复：补全缺失的 widgets 导入
+import 'package:flutter/widgets.dart';
 import 'package:flutter/rendering.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
@@ -59,7 +59,6 @@ class _PlayerPageState extends State<PlayerPage> {
   String? _resolvedUrl;
   String? _error;
   
-  // ====== 网页媒体流监听与接管 ======
   Set<String> _sniffedUrls = {}; 
   bool _isWebViewMode = false; 
   String? _webViewCookies; 
@@ -102,9 +101,7 @@ class _PlayerPageState extends State<PlayerPage> {
   }
 
   Future<void> _init() async {
-    // 核心修复：VolumeController 单例设置
     VolumeController.instance.showSystemUI = false;
-    
     final prefs = await SharedPreferences.getInstance();
     _playbackSpeed = prefs.getDouble('playback_speed') ?? 1.0;
     _danmakuEnabled = prefs.getBool('danmaku_enabled') ?? true;
@@ -402,9 +399,7 @@ class _PlayerPageState extends State<PlayerPage> {
     _dragStartY = details.localPosition.dy;
     _isDragging = true;
     _gestureTipTimer?.cancel();
-    // 核心修复：ScreenBrightness() 实例调用
     if (details.localPosition.dx < MediaQuery.of(context).size.width / 2) ScreenBrightness().current.then((val) => _startBrightness = val);
-    // 核心修复：VolumeController.instance 调用
     else VolumeController.instance.getVolume().then((val) => _startVolume = val);
   }
   void _onVerticalDragUpdate(DragUpdateDetails details) {
@@ -412,12 +407,10 @@ class _PlayerPageState extends State<PlayerPage> {
     final ratio = (_dragStartY - details.localPosition.dy) / (MediaQuery.of(context).size.height / 2);
     if (details.localPosition.dx < MediaQuery.of(context).size.width / 2) {
       double newVal = (_startBrightness + ratio).clamp(0.0, 1.0);
-      // 核心修复：ScreenBrightness() 实例调用
       ScreenBrightness().setScreenBrightness(newVal);
       setState(() => _gestureTip = '亮度 ${(newVal * 100).toInt()}%');
     } else {
       double newVal = (_startVolume + ratio).clamp(0.0, 1.0);
-      // 核心修复：VolumeController.instance 调用
       VolumeController.instance.setVolume(newVal);
       setState(() => _gestureTip = '音量 ${(newVal * 100).toInt()}%');
     }
@@ -615,7 +608,6 @@ class _PlayerPageState extends State<PlayerPage> {
        SharedPreferences.getInstance().then((prefs) => prefs.setInt(_progressKey, _controller!.value.position.inMilliseconds));
     }
     _controller?.removeListener(() {}); _controller?.dispose(); _controller = null;
-    // 核心修复：ScreenBrightness() 实例调用
     ScreenBrightness().resetScreenBrightness();
     super.dispose();
   }
@@ -686,7 +678,6 @@ class _PlayerPageState extends State<PlayerPage> {
     );
   }
 
-  // ====== 内置网页播放器及原生接管 ======
   Widget _buildWebViewPlayer() {
     if (_resolvedUrl == null) return const Text('找不到播放地址', style: TextStyle(color: Colors.white));
     return Stack(

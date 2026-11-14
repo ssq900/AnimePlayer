@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
-import 'package:html/parser.dart' as html_parser; // 用于补全未闭合标签
+import 'package:html/parser.dart' as html_parser;
 import 'package:xpath_for_html/xpath_for_html.dart';
 import 'package:xml/xml.dart' as xml;
 import '../models/rule.dart';
@@ -71,7 +71,6 @@ class XPathService {
     }
   }
 
-  // 辅助方法：清洗 HTML 以保证 XML 解析器能处理
   String _cleanHtmlForXml(String html) {
     try {
       final doc = html_parser.parse(html);
@@ -101,33 +100,25 @@ class XPathService {
     final xpath = XPath.html(safeHtml);
     final results = xpath.query(rule.searchSelector);
     
-    // 核心修正：使用 .elements 而不是 .nodes
-    if (results.elements.isEmpty) {
+    // 核心修复：严格使用 .nodes
+    if (results.nodes.isEmpty) {
       throw Exception('规则不匹配: 网页中未找到容器 "${rule.searchSelector}"，可能网站已改版');
     }
 
-    List<xml.XmlElement> items = [];
+    List<xml.XmlNode> items = [];
     
-    // 如果配置了子选择器，尝试从容器中找子项
     if (rule.animeLinkSelector.isNotEmpty) {
       try {
         final subQuery = xpath.query(rule.animeLinkSelector);
-        // 核心修正：使用 .elements
-        for (var node in subQuery.elements) {
-          if (node is xml.XmlElement) items.add(node);
-        }
+        items = subQuery.nodes.toList();
       } catch (_) {}
     }
 
-    // 兜底：如果没找到子项，直接把容器当作条目
     if (items.isEmpty) {
-      // 核心修正：使用 .elements
-      for (var node in results.elements) {
-        if (node is xml.XmlElement) items.add(node);
-      }
+      items = results.nodes.toList();
     }
 
-    return items.map((el) {
+    return items.whereType<xml.XmlElement>().map((el) {
       final href = el.getAttribute('href') ?? el.getAttribute('src') ?? '';
       final title = el.innerText.replaceAll(RegExp(r'\s+'), ' ').trim();
       
@@ -170,10 +161,9 @@ class XPathService {
     final xpath = XPath.html(safeHtml);
     final results = xpath.query(rule.episodeListSelector);
     
-    // 核心修正：使用 .elements
-    if (results.elements.isEmpty) throw Exception('网页中未找到剧集列表，可能规则失效');
+    if (results.nodes.isEmpty) throw Exception('网页中未找到剧集列表，可能规则失效');
     
-    return results.elements.whereType<xml.XmlElement>().map((el) {
+    return results.nodes.whereType<xml.XmlElement>().map((el) {
       final href = el.getAttribute('href') ?? '';
       final title = el.innerText.replaceAll(RegExp(r'\s+'), ' ').trim();
       return EpisodeItem(title: title, link: _absolute(rule.baseUrl, href));
@@ -188,10 +178,9 @@ class XPathService {
     final xpath = XPath.html(safeHtml);
     final results = xpath.query(rule.episodeLinkSelector);
     
-    // 核心修正：使用 .elements
-    if (results.elements.isEmpty) throw Exception('网页中未找到视频播放地址');
+    if (results.nodes.isEmpty) throw Exception('网页中未找到视频播放地址');
 
-    final el = results.elements.whereType<xml.XmlElement>().firstOrNull;
+    final el = results.nodes.whereType<xml.XmlElement>().firstOrNull;
     if (el == null) return episodeUrl;
 
     final href = el.getAttribute('href') ?? el.getAttribute('src') ?? '';

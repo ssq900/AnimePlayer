@@ -27,11 +27,6 @@ dependencies:
   speech_to_text: ^7.0.0
   media_cast_dlna: ^0.3.1
 
-  # 新增：语音、画中画、DLNA投屏
-  speech_to_text: ^7.0.0
-  fl_pip: ^3.2.3
-  media_cast_dlna: ^0.3.1
-
 dev_dependencies:
   flutter_test:
     sdk: flutter

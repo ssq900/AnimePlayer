@@ -27,6 +27,23 @@ class StorageService {
     await tempFile.rename(targetFile.path);
   }
 
+  // 【新增】初始化并清理残留的临时文件
+  Future<void> init() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final files = dir.listSync();
+      for (var file in files) {
+        if (file.path.endsWith('.tmp')) {
+          try {
+            await file.delete();
+          } catch (_) {}
+        }
+      }
+    } catch (e) {
+      debugPrint('[StorageError] 清理临时文件失败: $e');
+    }
+  }
+
   // ==================== 规则存储 ====================
   Future<List<AnimeRule>> loadRules() async {
     return await _rulesLock.synchronized(() async {
@@ -148,7 +165,21 @@ class StorageService {
     });
   }
 
-  // ==================== 追番日历存储（本次修复重点） ====================
+  // 【新增】全量保存历史（供 SyncService 恢复云端数据使用）
+  Future<bool> saveHistory(List<HistoryItem> history) async {
+    return await _historyLock.synchronized(() async {
+      try {
+        final file = await _getFile(_historyFileName);
+        await _atomicWrite(file, jsonEncode(history.map((h) => h.toJson()).toList()));
+        return true;
+      } catch (e) {
+        debugPrint('[StorageError] 全量保存历史失败: $e');
+        return false;
+      }
+    });
+  }
+
+  // ==================== 追番日历存储 ====================
   Future<List<ScheduleItem>> loadSchedules() async {
     return await _scheduleLock.synchronized(() async {
       try {

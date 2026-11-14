@@ -22,9 +22,7 @@ class _HomePageState extends State<HomePage> {
   List<AnimeRule> _rules = [];
   List<String> _searchHistory = [];
   List<SearchResult> _results = [];
-  List<String> _searchErrors = []; // 错误聚合面板
-  bool _showErrors = false; // 错误面板折叠状态
-
+  List<String> _searchErrors = [];
   bool _isSearching = false;
   String? _error;
 
@@ -45,10 +43,7 @@ class _HomePageState extends State<HomePage> {
         if (val == 'done' || val == 'notListening') {
           if (mounted) {
             setState(() => _isListening = false);
-            // 修复语音搜索触发：监听结束后如果文本框有字，直接搜索
-            if (_searchController.text.trim().isNotEmpty) {
-              _startSearch();
-            }
+            if (_searchController.text.trim().isNotEmpty) _startSearch();
           }
         }
       },
@@ -64,11 +59,7 @@ class _HomePageState extends State<HomePage> {
     if (!_speech.isListening) {
       setState(() => _isListening = true);
       await _speech.listen(
-        onResult: (val) {
-          setState(() {
-            _searchController.text = val.recognizedWords;
-          });
-        },
+        onResult: (val) => setState(() => _searchController.text = val.recognizedWords),
         localeId: 'zh_CN',
         onDevice: true,
       );
@@ -92,7 +83,6 @@ class _HomePageState extends State<HomePage> {
   Future<void> _startSearch([String? keyword]) async {
     final rawText = keyword ?? _searchController.text.trim();
     if (rawText.isEmpty) return;
-    // 标准化输入
     final text = rawText.toLowerCase().trim();
     _searchController.text = rawText;
 
@@ -110,11 +100,9 @@ class _HomePageState extends State<HomePage> {
       _error = null;
       _results = [];
       _searchErrors = [];
-      _showErrors = false;
     });
     FocusScope.of(context).unfocus();
 
-    // 历史标准化去重
     final prefs = await SharedPreferences.getInstance();
     final history = prefs.getStringList('search_history') ?? [];
     history.removeWhere((h) => h.toLowerCase().trim() == text);
@@ -130,7 +118,6 @@ class _HomePageState extends State<HomePage> {
     
     Future<void> processRule(AnimeRule rule) async {
       try {
-        // 超时提升至 30 秒
         final res = await _xpath.search(rule, text).timeout(
           const Duration(seconds: 30), 
           onTimeout: () => throw Exception('请求超时 (>30s)')
@@ -140,12 +127,9 @@ class _HomePageState extends State<HomePage> {
         }
       } catch (e) {
         if (mounted) {
-          setState(() {
-            _searchErrors.add('[${rule.name}] ${e.toString()}');
-          });
+          setState(() => _searchErrors.add('[${rule.name}] ${e.toString()}'));
         }
       } finally {
-        // 使用 finally 确保任务计数绝对安全递减
         activeTasks--;
         completedTasks++;
         if (completedTasks == rules.length && mounted) {
@@ -158,7 +142,7 @@ class _HomePageState extends State<HomePage> {
       while (activeTasks < maxConcurrent && queue.isNotEmpty) {
         final rule = queue.removeAt(0);
         activeTasks++;
-        processRule(rule); // 此处不 await，让其并行
+        processRule(rule);
       }
       await Future.delayed(const Duration(milliseconds: 200));
     }
@@ -203,7 +187,7 @@ class _HomePageState extends State<HomePage> {
           
           if (_isSearching) const LinearProgressIndicator(),
           
-          // 错误聚合面板
+          // 统一错误反馈面板（橙色提示）
           if (_searchErrors.isNotEmpty)
             Card(
               margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),

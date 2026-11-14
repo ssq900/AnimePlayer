@@ -1,4 +1,5 @@
 name: Build APK
+
 on:
   push:
     branches: [ main ]
@@ -42,8 +43,7 @@ jobs:
               <application
                   android:label="Anime Aggregator"
                   android:name="${applicationName}"
-                  android:icon="@mipmap/ic_launcher"
-                  android:usesCleartextTraffic="true">
+                  android:icon="@mipmap/ic_launcher">
                   <activity
                       android:name=".MainActivity"
                       android:exported="true"

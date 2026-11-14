@@ -23,25 +23,37 @@ void main() {
   });
 
   tearDown(() async {
-    if (await tempDir.exists()) {
-      await tempDir.delete(recursive: true);
-    }
+    if (await tempDir.exists()) await tempDir.delete(recursive: true);
   });
 
   test('并发写入不会导致数据损坏', () async {
     final futures = <Future<bool>>[];
-    // 并发发起 10 次添加
     for (int i = 0; i < 10; i++) {
       futures.add(storage.addHistory(HistoryItem(
         ruleId: 'rule1', ruleName: 'test', animeTitle: 'Anime', episodeTitle: 'Ep$i', 
         episodeUrl: 'url$i', timestamp: DateTime.now().millisecondsSinceEpoch
       )));
     }
-    
     final results = await Future.wait(futures);
     expect(results.every((e) => e == true), isTrue);
 
     final history = await storage.loadHistory();
     expect(history.length, 10); // 没有相互覆盖
+  });
+
+  test('初始化时应当清理 .tmp 文件', () async {
+    final tmpFile = File('${tempDir.path}/anime_rules.json.tmp');
+    await tmpFile.writeAsString('dirty data');
+    
+    await storage.init();
+    expect(await tmpFile.exists(), isFalse);
+  });
+
+  test('加载损坏的 JSON 时应当返回空列表而不崩溃', () async {
+    final corruptFile = File('${tempDir.path}/anime_rules.json');
+    await corruptFile.writeAsString('{ "broken": [1, 2, 3] ... }'); // 不完整的数据
+    
+    final rules = await storage.loadRules();
+    expect(rules, isEmpty);
   });
 }

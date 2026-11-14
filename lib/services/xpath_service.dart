@@ -7,19 +7,15 @@ import 'package:html/parser.dart' as html_parser;
 import 'package:xml/xml.dart' as xml;
 import 'package:xml/xpath.dart';
 import '../models/rule.dart';
-
-class AppException implements Exception {
-  final String message;
-  AppException(this.message);
-  @override
-  String toString() => message;
-}
-
-class NetworkException extends AppException { NetworkException(String msg) : super(msg); }
-class ParseException extends AppException { ParseException(String msg) : super(msg); }
+import 'exceptions.dart'; // 引入统一异常库
 
 class XPathService {
-  Future<String> fetchHtml(String url, {String? waitForSelector}) async {
+  Future<String> fetchHtml(
+    String url, {
+    String? waitForSelector,
+    Duration timeout = const Duration(seconds: 25),
+    int pollCount = 15,
+  }) async {
     if (!url.startsWith('http://') && !url.startsWith('https://')) {
       throw NetworkException('非法的协议请求: 仅支持 HTTP/HTTPS');
     }
@@ -40,7 +36,7 @@ class XPathService {
           try {
             if (waitForSelector != null && waitForSelector.isNotEmpty) {
               final safeSelector = jsonEncode(waitForSelector.startsWith('//') ? 'body' : waitForSelector);
-              for (int i = 0; i < 15; i++) { 
+              for (int i = 0; i < pollCount; i++) { 
                 if (completer.isCompleted) return;
                 final hasElement = await controller.evaluateJavascript(
                     source: "document.querySelector($safeSelector) != null"
@@ -63,23 +59,18 @@ class XPathService {
         },
         onReceivedError: (controller, request, error) {
           if (!completer.isCompleted && request.isForMainFrame == true) {
-            if (error.description.contains("ERR_SSL") || error.description.contains("ERR_CERT")) {
-               completer.completeError(NetworkException("TLS/SSL 握手失败，请检查网络代理。"));
-            } else {
-               completer.completeError(NetworkException("网页加载失败: ${error.description}"));
-            }
+             completer.completeError(NetworkException("网页加载失败: ${error.description}"));
           }
         },
       );
 
       await webView.run();
-      return await completer.future.timeout(const Duration(seconds: 25), onTimeout: () {
-        if (!completer.isCompleted) completer.completeError(NetworkException('网页加载超时 (>25s)'));
-        return '';
+      return await completer.future.timeout(timeout, onTimeout: () {
+        throw NetworkException('网页加载超时 (>${timeout.inSeconds}s)');
       });
     } catch (e) {
       if (e is AppException) rethrow;
-      throw NetworkException('网络异常: $e');
+      throw NetworkException('网络请求异常: $e');
     } finally {
       if (webView != null && !isDisposed) {
         isDisposed = true;
@@ -88,92 +79,57 @@ class XPathService {
     }
   }
 
-  // 核心修复 1：超级 HTML 清洗，避免 xml 解析器被未闭合标签搞崩溃
   String _cleanHtmlForXml(String html) {
     try {
       String cleaned = html;
-      // 强行清理脚本和样式
       cleaned = cleaned.replaceAll(RegExp(r'<script\b[^>]*>([\s\S]*?)<\/script>'), '');
       cleaned = cleaned.replaceAll(RegExp(r'<style\b[^>]*>([\s\S]*?)<\/style>'), '');
       cleaned = cleaned.replaceAll(RegExp(r'<head\b[^>]*>([\s\S]*?)<\/head>'), '');
-      // 强行补全自闭合标签
       cleaned = cleaned.replaceAll(RegExp(r'<(link|meta|img|br|hr|input)([^>]*?)(?<!/)>'), '<$1$2 />');
-      
       final doc = html_parser.parse(cleaned);
       return doc.outerHtml;
-    } catch (_) {
-      return html;
-    }
+    } catch (_) { return html; }
   }
 
-  // 核心修复 2：智能替换，让绝对路径查找变成模糊匹配
   String _normalizeXpath(String xpath) {
     String res = xpath.trim();
-    if (!res.startsWith('//') && !res.startsWith('/') && !res.startsWith('./')) {
-      res = '//$res';
-    }
-    // 把严格的 [@class='xxx'] 替换为 [contains(@class, 'xxx')]
-    // 这样即使网页多加了类名或者顺序变了，也能精准命中！
+    if (!res.startsWith('//') && !res.startsWith('/') && !res.startsWith('./')) res = '//$res';
     final reg = RegExp(r"""\[@class\s*=\s*['"]([^'"]+)['"]\]""");
-    res = res.replaceAllMapped(reg, (m) {
-      final classes = m.group(1)!.trim();
-      return "[contains(@class, '$classes')]";
-    });
-    
+    res = res.replaceAllMapped(reg, (m) => "[contains(@class, '${m.group(1)!.trim()}')]");
     return res;
   }
 
   Future<List<SearchResult>> search(AnimeRule rule, String keyword) async {
-    if (rule.searchSelector.trim().isEmpty) {
-      throw ParseException('规则错误: 搜索结果容器选择器为空');
-    }
-    
+    if (rule.searchSelector.trim().isEmpty) throw ParseException('规则错误: 搜索结果容器选择器为空');
     final encoded = Uri.encodeComponent(keyword);
     String searchUrl = rule.baseUrl;
-    if (searchUrl.contains('{keyword}')) {
-      searchUrl = searchUrl.replaceAll('{keyword}', encoded);
-    } else {
-      final sep = searchUrl.contains('?') ? '&' : '?';
-      searchUrl = '$searchUrl${sep}wd=$encoded';
-    }
+    if (searchUrl.contains('{keyword}')) searchUrl = searchUrl.replaceAll('{keyword}', encoded);
+    else searchUrl = '$searchUrl${searchUrl.contains('?') ? '&' : '?'}wd=$encoded';
 
     final rawHtml = await fetchHtml(searchUrl);
-    final safeHtml = _cleanHtmlForXml(rawHtml);
-    
     try {
-      final document = xml.XmlDocument.parse(safeHtml);
+      final document = xml.XmlDocument.parse(_cleanHtmlForXml(rawHtml));
       final searchXpath = _normalizeXpath(rule.searchSelector);
-      
       final containerNodes = document.xpath(searchXpath);
-      if (containerNodes.isEmpty) {
-        throw ParseException('未找到搜索容器 "${rule.searchSelector}"，可能是网站已改版或规则失效。');
-      }
+      if (containerNodes.isEmpty) throw ParseException('未找到搜索容器，可能网站已改版');
 
       List<xml.XmlNode> items = [];
-      
       if (rule.animeLinkSelector.isNotEmpty) {
         final linkXpath = _normalizeXpath(rule.animeLinkSelector);
         for (var node in containerNodes) {
-          final subNodes = node.xpath(linkXpath);
-          items.addAll(subNodes);
+          items.addAll(node.xpath(linkXpath));
         }
       }
-
       if (items.isEmpty) items = containerNodes.toList();
 
       return items.whereType<xml.XmlElement>().map((el) {
         final href = el.getAttribute('href') ?? el.getAttribute('src') ?? '';
         final title = el.innerText.replaceAll(RegExp(r'\s+'), ' ').trim();
-        
         if (el.name.local != 'a' && href.isEmpty) {
           try {
             final innerA = el.findElements('a').firstOrNull;
             if (innerA != null) {
-              return SearchResult(
-                title: innerA.innerText.replaceAll(RegExp(r'\s+'), ' ').trim(),
-                link: _absolute(rule.baseUrl, innerA.getAttribute('href') ?? ''),
-                rule: rule
-              );
+              return SearchResult(title: innerA.innerText.trim(), link: _absolute(rule.baseUrl, innerA.getAttribute('href') ?? ''), rule: rule);
             }
           } catch (_) {}
         }
@@ -182,20 +138,14 @@ class XPathService {
       .where((r) {
         if (r.link.isEmpty || r.title.isEmpty) return false;
         final uri = Uri.tryParse(r.link);
-        if (uri == null) return false;
-        final path = uri.path;
-        if (path == '/' || path.isEmpty) return false;
-        
+        if (uri == null || uri.path == '/' || uri.path.isEmpty) return false;
         final cleanKeyword = keyword.toLowerCase().trim();
         final cleanTitle = r.title.toLowerCase().trim();
-        if (!cleanTitle.contains(cleanKeyword) && !cleanKeyword.contains(cleanTitle)) {
-          return false;
-        }
-        return true;
+        return cleanTitle.contains(cleanKeyword) || cleanKeyword.contains(cleanTitle);
       }).toList();
     } catch (e) {
       if (e is AppException) rethrow;
-      throw ParseException('XPath解析出错: $e');
+      throw ParseException('网页内容解析失败: $e');
     }
   }
 
@@ -205,7 +155,7 @@ class XPathService {
     try {
       final document = xml.XmlDocument.parse(_cleanHtmlForXml(rawHtml));
       final nodes = document.xpath(_normalizeXpath(rule.episodeListSelector));
-      if (nodes.isEmpty) throw ParseException('未找到剧集列表');
+      if (nodes.isEmpty) throw ParseException('未找到剧集列表，可能规则失效');
       return nodes.whereType<xml.XmlElement>().map((el) {
         return EpisodeItem(title: el.innerText.trim(), link: _absolute(rule.baseUrl, el.getAttribute('href') ?? ''));
       }).where((e) => e.link.isNotEmpty).toList();
@@ -223,8 +173,7 @@ class XPathService {
       final el = nodes.whereType<xml.XmlElement>().firstOrNull;
       if (el == null) throw ParseException('未找到视频播放地址');
       final href = el.getAttribute('href') ?? el.getAttribute('src') ?? '';
-      if (href.isEmpty) return episodeUrl;
-      return _absolute(rule.baseUrl, href);
+      return href.isEmpty ? episodeUrl : _absolute(rule.baseUrl, href);
     } catch (e) {
       throw ParseException('解析视频链接失败: $e');
     }
@@ -236,8 +185,7 @@ class XPathService {
       if (href.startsWith('//')) return '${Uri.parse(baseUrl).scheme}:$href';
       final resolved = Uri.parse(baseUrl).resolve(href).toString();
       final scheme = Uri.parse(resolved).scheme.toLowerCase();
-      if (scheme != 'http' && scheme != 'https') return '';
-      return resolved;
+      return (scheme == 'http' || scheme == 'https') ? resolved : '';
     } catch (_) { return ''; }
   }
 }

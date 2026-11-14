@@ -53,25 +53,28 @@ class KazumiService {
     String css = xpath.trim();
     if (css.startsWith('.') || css.startsWith('#')) return css;
 
+    // 1. 处理 //tag[@class="a b"] -> .a.b
     final regClass = RegExp(r'''//\w+\[@class=["']([^"']+)["']\]''');
     if (regClass.hasMatch(css)) {
       final match = regClass.firstMatch(css);
       return '.${match!.group(1)!.replaceAll(' ', '.')}';
     }
 
+    // 2. 处理 //tag[@id="x"] -> #x
     final regId = RegExp(r'''//\w+\[@id=["']([^"']+)["']\]''');
     if (regId.hasMatch(css)) {
       final match = regId.firstMatch(css);
       return '#${match!.group(1)}';
     }
 
+    // 3. 处理 //tag[@attr="v"] -> tag[attr="v"]
     css = css.replaceAllMapped(RegExp(r'''//(\w+)\[@([^=]+)="([^"]+)"\]'''), (m) {
       return '${m[1]}[${m[2]}="${m[3]}"]';
     });
 
-    css = css.replaceAllMapped(RegExp(r'(\w+)\[(\d+)\]'), (match) {
-      return '${match.group(1)}:nth-of-type(${match.group(2)})';
-    });
+    // 4. 核心修复：直接删除所有的数字索引（如 [2]），防止生成 nth-of-type 导致解析崩溃
+    css = css.replaceAll(RegExp(r'\[\d+\]'), '');
+    css = css.replaceAll(RegExp(r':nth-of-type\(\d+\)'), '');
 
     css = css.replaceAll('//', ' ');
     css = css.replaceAll('/', ' > ');

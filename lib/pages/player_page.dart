@@ -14,6 +14,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:volume_controller/volume_controller.dart';
 import 'package:dlna_dart/dlna.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import '../models/rule.dart';
 import '../services/xpath_service.dart';
 import '../services/storage_service.dart';
@@ -21,7 +22,6 @@ import '../widgets/danmaku_overlay.dart';
 import '../widgets/danmaku_heatmap.dart';
 import 'detail_page.dart';
 
-// 简单的字幕数据类
 class SubtitleItem {
   final Duration start;
   final Duration end;
@@ -56,13 +56,16 @@ class _PlayerPageState extends State<PlayerPage> {
   bool _loading = true;
   String? _resolvedUrl;
   String? _error;
+  
+  // ====== 网页媒体流监听状态 ======
+  Set<String> _sniffedUrls = {}; 
+  bool _isWebViewMode = false; // 当前是否处于解析网页模式
 
   double _playbackSpeed = 1.0;
   Timer? _sleepTimer;
   Timer? _progressTimer;
   int _sleepMinutesRemaining = 0;
 
-  // 弹幕与 OP/ED 配置
   List<DanmakuItem> _danmakus = [];
   final _danmakuController = TextEditingController();
   bool _showDanmakuInput = false;
@@ -72,12 +75,10 @@ class _PlayerPageState extends State<PlayerPage> {
   Duration? _opEndTime;
   bool _showSkipOpBtn = false;
 
-  // ====== 字幕配置 ======
   List<SubtitleItem> _subtitles = [];
   String? _currentSubtitleText;
   bool _subtitleEnabled = true;
 
-  // ====== 手势控制状态 ======
   String? _gestureTip;
   Timer? _gestureTipTimer;
   double _dragStartX = 0;
@@ -91,6 +92,56 @@ class _PlayerPageState extends State<PlayerPage> {
   String get _opKey => 'op_end_${base64Url.encode(utf8.encode(widget.episodeUrl))}';
   String get _progressKey => 'progress_${base64Url.encode(utf8.encode(widget.episodeUrl))}';
 
+  // 注入的 JS 脚本：监听网络请求和 DOM 节点
+  final String _sniffJs = """
+    (function() {
+        function isValidStream(url) {
+            if (!url || typeof url !== 'string') return false;
+            // 过滤掉 MSE 的 blob 链接，原生播放器无法直接处理
+            if (url.startsWith('blob:') || url.startsWith('data:')) return false;
+            
+            var lowerUrl = url.toLowerCase();
+            // 仅匹配常见的公开媒体流后缀或特征
+            return lowerUrl.includes('.m3u8') || 
+                   lowerUrl.includes('.mp4') || 
+                   lowerUrl.includes('.flv') ||
+                   lowerUrl.includes('mime=video');
+        }
+
+        var originalXhrOpen = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function(method, url) {
+            if (isValidStream(url)) {
+                window.flutter_inappwebview.callHandler('mediaSniffed', url);
+            }
+            return originalXhrOpen.apply(this, arguments);
+        };
+
+        var originalFetch = window.fetch;
+        window.fetch = function(input, init) {
+            var url = (typeof input === 'string') ? input : (input ? input.url : '');
+            if (isValidStream(url)) {
+                window.flutter_inappwebview.callHandler('mediaSniffed', url);
+            }
+            return originalFetch.apply(this, arguments);
+        };
+
+        setInterval(function() {
+            var videos = document.querySelectorAll('video');
+            videos.forEach(function(v) {
+                if (v.src && isValidStream(v.src)) {
+                    window.flutter_inappwebview.callHandler('mediaSniffed', v.src);
+                }
+                var sources = v.querySelectorAll('source');
+                sources.forEach(function(s) {
+                    if (s.src && isValidStream(s.src)) {
+                        window.flutter_inappwebview.callHandler('mediaSniffed', s.src);
+                    }
+                });
+            });
+        }, 1500);
+    })();
+  """;
+
   @override
   void initState() {
     super.initState();
@@ -99,7 +150,6 @@ class _PlayerPageState extends State<PlayerPage> {
 
   Future<void> _init() async {
     VolumeController.instance.showSystemUI = false;
-    
     final prefs = await SharedPreferences.getInstance();
     _playbackSpeed = prefs.getDouble('playback_speed') ?? 1.0;
     _danmakuEnabled = prefs.getBool('danmaku_enabled') ?? true;
@@ -137,54 +187,12 @@ class _PlayerPageState extends State<PlayerPage> {
       await _loadDanmakus();
 
       if (_isDirectVideo(url)) {
-        final c = VideoPlayerController.networkUrl(Uri.parse(url));
-        await c.initialize();
-        if (!mounted) {
-          await c.dispose();
-          return;
-        }
-        setState(() => _controller = c);
-        c.setPlaybackSpeed(_playbackSpeed);
-        
-        final prefs = await SharedPreferences.getInstance();
-        final savedMs = prefs.getInt(_progressKey) ?? 0;
-        if (savedMs > 5000 && savedMs < c.value.duration.inMilliseconds - 10000) {
-          await c.seekTo(Duration(milliseconds: savedMs));
-          _showTip('已为您续播至 ${_formatDuration(Duration(milliseconds: savedMs))}');
-        }
-        
-        c.play();
-        
-        c.addListener(() {
-          if (!mounted) return;
-          
-          if (_subtitleEnabled && _subtitles.isNotEmpty) {
-            final current = c.value.position;
-            final sub = _subtitles.firstWhere(
-              (s) => current >= s.start && current <= s.end,
-              orElse: () => SubtitleItem(Duration.zero, Duration.zero, ''),
-            );
-            if (_currentSubtitleText != sub.text) {
-              setState(() => _currentSubtitleText = sub.text);
-            }
-          }
-
-          if (_danmakuEnabled) setState(() {});
-
-          if (_opEndTime != null) {
-            final current = c.value.position;
-            if (current < _opEndTime! && current > const Duration(seconds: 2)) {
-              if (!_showSkipOpBtn) setState(() => _showSkipOpBtn = true);
-            } else {
-              if (_showSkipOpBtn) setState(() => _showSkipOpBtn = false);
-            }
-          }
-        });
-
-        _progressTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
-          if (c.value.isInitialized) {
-            prefs.setInt(_progressKey, c.value.position.inMilliseconds);
-          }
+        await _initPlayer(url);
+      } else {
+        // 进入网页模式，等待监听
+        setState(() {
+          _isWebViewMode = true;
+          _loading = false;
         });
       }
     } catch (e) {
@@ -192,17 +200,100 @@ class _PlayerPageState extends State<PlayerPage> {
         setState(() {
           _error = e.toString();
           _resolvedUrl = null;
+          _loading = false;
         });
       }
-    } finally {
-      if (mounted) setState(() => _loading = false);
     }
   }
 
-  // ========== 一键换源弹窗 ==========
+  Future<void> _initPlayer(String url) async {
+    setState(() {
+      _loading = true;
+      _isWebViewMode = false;
+    });
+
+    try {
+      final c = VideoPlayerController.networkUrl(
+        Uri.parse(url),
+        httpHeaders: {
+          'Referer': widget.episodeUrl, // 防盗链绕过
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        },
+      );
+      await c.initialize();
+      if (!mounted) {
+        await c.dispose();
+        return;
+      }
+      setState(() {
+        _controller = c;
+        _loading = false;
+      });
+      c.setPlaybackSpeed(_playbackSpeed);
+      
+      final prefs = await SharedPreferences.getInstance();
+      final savedMs = prefs.getInt(_progressKey) ?? 0;
+      if (savedMs > 5000 && savedMs < c.value.duration.inMilliseconds - 10000) {
+        await c.seekTo(Duration(milliseconds: savedMs));
+        _showTip('已为您续播至 ${_formatDuration(Duration(milliseconds: savedMs))}');
+      }
+      
+      c.play();
+      
+      c.addListener(() {
+        if (!mounted) return;
+        if (_subtitleEnabled && _subtitles.isNotEmpty) {
+          final current = c.value.position;
+          final sub = _subtitles.firstWhere(
+            (s) => current >= s.start && current <= s.end,
+            orElse: () => SubtitleItem(Duration.zero, Duration.zero, ''),
+          );
+          if (_currentSubtitleText != sub.text) {
+            setState(() => _currentSubtitleText = sub.text);
+          }
+        }
+
+        if (_danmakuEnabled) setState(() {});
+
+        if (_opEndTime != null) {
+          final current = c.value.position;
+          if (current < _opEndTime! && current > const Duration(seconds: 2)) {
+            if (!_showSkipOpBtn) setState(() => _showSkipOpBtn = true);
+          } else {
+            if (_showSkipOpBtn) setState(() => _showSkipOpBtn = false);
+          }
+        }
+      });
+
+      _progressTimer?.cancel();
+      _progressTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
+        if (c.value.isInitialized) {
+          prefs.setInt(_progressKey, c.value.position.inMilliseconds);
+        }
+      });
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = '该媒体流暂不支持直接播放（可能受加密或跨域限制保护）。已自动退回网页模式。';
+          _loading = false;
+          _isWebViewMode = true;
+        });
+      }
+    }
+  }
+
+  // 处理监听回调
+  void _handleSniffedUrl(String url) {
+    if (url.isEmpty || !url.startsWith('http')) return;
+    if (!_sniffedUrls.contains(url)) {
+      setState(() {
+        _sniffedUrls.add(url);
+      });
+    }
+  }
+
   Future<void> _showChangeSourceSheet() async {
     showDialog(context: context, barrierDismissible: false, builder: (_) => const Center(child: CircularProgressIndicator()));
-    
     final allRules = await _storage.loadRules();
     final otherRules = allRules.where((r) => r.id != widget.rule.id).toList();
     
@@ -218,14 +309,11 @@ class _PlayerPageState extends State<PlayerPage> {
     final futures = otherRules.map((rule) async {
       try {
         final res = await _xpath.search(rule, widget.animeTitle);
-        if (res.isNotEmpty) {
-          results.addAll(res);
-        }
+        if (res.isNotEmpty) results.addAll(res);
       } catch (_) {}
     });
     
     await Future.wait(futures);
-    
     if (!mounted) return;
     Navigator.pop(context);
 
@@ -279,40 +367,26 @@ class _PlayerPageState extends State<PlayerPage> {
     );
   }
 
-  // ========== 字幕加载解析 ==========
   Future<void> _loadSubtitleFile() async {
     try {
-      FilePickerResult? result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['srt', 'vtt'],
-      );
+      FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['srt', 'vtt']);
       if (result == null || result.files.single.path == null) return;
-
       final file = File(result.files.single.path!);
       final content = await file.readAsString(encoding: utf8);
-
       final List<SubtitleItem> parsed = [];
       final blocks = content.split(RegExp(r'\n\s*\n'));
       for (var block in blocks) {
         final lines = block.trim().split('\n');
         if (lines.length >= 3) {
-          final timeLine = lines[1];
-          final text = lines.sublist(2).join('\n');
-          final times = timeLine.split(' --> ');
+          final times = lines[1].split(' --> ');
           if (times.length == 2) {
             final start = _parseTime(times[0]);
             final end = _parseTime(times[1]);
-            if (start != null && end != null) {
-              parsed.add(SubtitleItem(start, end, text));
-            }
+            if (start != null && end != null) parsed.add(SubtitleItem(start, end, lines.sublist(2).join('\n')));
           }
         }
       }
-
-      setState(() {
-        _subtitles = parsed;
-        _subtitleEnabled = true;
-      });
+      setState(() { _subtitles = parsed; _subtitleEnabled = true; });
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('成功加载 ${parsed.length} 条字幕')));
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('字幕加载失败: $e')));
@@ -333,93 +407,40 @@ class _PlayerPageState extends State<PlayerPage> {
     return null;
   }
 
-  // ========== 手势处理逻辑 ==========
-  void _onDoubleTap() {
-    if (_controller == null) return;
-    if (_controller!.value.isPlaying) {
-      _controller!.pause();
-      _showTip('暂停');
-    } else {
-      _controller!.play();
-      _showTip('播放');
-    }
-  }
-
-  void _onLongPressStart(LongPressStartDetails details) {
-    if (_controller == null) return;
-    _controller!.setPlaybackSpeed(2.0);
-    _showTip('2x 倍速中');
-  }
-
-  void _onLongPressEnd(LongPressEndDetails details) {
-    if (_controller == null) return;
-    _controller!.setPlaybackSpeed(_playbackSpeed);
-    setState(() => _gestureTip = null);
-    _gestureTipTimer?.cancel();
-  }
-
-  void _onHorizontalDragStart(DragStartDetails details) {
-    if (_controller == null) return;
-    _dragStartX = details.localPosition.dx;
-    _dragStartPosition = _controller!.value.position;
-    _isDragging = true;
-    _gestureTipTimer?.cancel();
-  }
-
+  void _onDoubleTap() { if (_controller == null) return; if (_controller!.value.isPlaying) { _controller!.pause(); _showTip('暂停'); } else { _controller!.play(); _showTip('播放'); } }
+  void _onLongPressStart(LongPressStartDetails details) { if (_controller == null) return; _controller!.setPlaybackSpeed(2.0); _showTip('2x 倍速中'); }
+  void _onLongPressEnd(LongPressEndDetails details) { if (_controller == null) return; _controller!.setPlaybackSpeed(_playbackSpeed); setState(() => _gestureTip = null); _gestureTipTimer?.cancel(); }
+  void _onHorizontalDragStart(DragStartDetails details) { if (_controller == null) return; _dragStartX = details.localPosition.dx; _dragStartPosition = _controller!.value.position; _isDragging = true; _gestureTipTimer?.cancel(); }
   void _onHorizontalDragUpdate(DragUpdateDetails details) {
     if (!_isDragging || _controller == null) return;
     final deltaX = details.localPosition.dx - _dragStartX;
     final seekSeconds = (deltaX / MediaQuery.of(context).size.width) * 600;
     final newPosition = _dragStartPosition + Duration(seconds: seekSeconds.toInt());
-    
-    final targetPos = newPosition > Duration.zero && newPosition < _controller!.value.duration 
-        ? newPosition 
-        : (newPosition <= Duration.zero ? Duration.zero : _controller!.value.duration);
-        
-    setState(() {
-      _gestureTip = '${seekSeconds > 0 ? "快进" : "快退"} ${_formatDuration(targetPos)}';
-    });
+    final targetPos = newPosition > Duration.zero && newPosition < _controller!.value.duration ? newPosition : (newPosition <= Duration.zero ? Duration.zero : _controller!.value.duration);
+    setState(() => _gestureTip = '${seekSeconds > 0 ? "快进" : "快退"} ${_formatDuration(targetPos)}');
   }
-
   void _onHorizontalDragEnd(DragEndDetails details) {
     if (!_isDragging || _controller == null) return;
     _isDragging = false;
-    
     if (_gestureTip != null && _gestureTip!.contains('快')) {
-      final timeStr = _gestureTip!.split(' ').last;
-      final parts = timeStr.split(':');
-      if (parts.length == 2) {
-        final min = int.tryParse(parts[0]) ?? 0;
-        final sec = int.tryParse(parts[1]) ?? 0;
-        _controller!.seekTo(Duration(minutes: min, seconds: sec));
-      }
+      final parts = _gestureTip!.split(' ').last.split(':');
+      if (parts.length == 2) _controller!.seekTo(Duration(minutes: int.tryParse(parts[0]) ?? 0, seconds: int.tryParse(parts[1]) ?? 0));
     }
     _gestureTipTimer?.cancel();
     setState(() => _gestureTip = null);
   }
-
   void _onVerticalDragStart(DragStartDetails details) {
     if (_controller == null) return;
     _dragStartY = details.localPosition.dy;
     _isDragging = true;
     _gestureTipTimer?.cancel();
-    
-    final width = MediaQuery.of(context).size.width;
-    if (details.localPosition.dx < width / 2) {
-      ScreenBrightness().current.then((val) => _startBrightness = val);
-    } else {
-      VolumeController.instance.getVolume().then((val) => _startVolume = val);
-    }
+    if (details.localPosition.dx < MediaQuery.of(context).size.width / 2) ScreenBrightness().current.then((val) => _startBrightness = val);
+    else VolumeController.instance.getVolume().then((val) => _startVolume = val);
   }
-
   void _onVerticalDragUpdate(DragUpdateDetails details) {
     if (!_isDragging || _controller == null) return;
-    final deltaY = _dragStartY - details.localPosition.dy;
-    final height = MediaQuery.of(context).size.height;
-    final ratio = deltaY / (height / 2);
-
-    final width = MediaQuery.of(context).size.width;
-    if (details.localPosition.dx < width / 2) {
+    final ratio = (_dragStartY - details.localPosition.dy) / (MediaQuery.of(context).size.height / 2);
+    if (details.localPosition.dx < MediaQuery.of(context).size.width / 2) {
       double newVal = (_startBrightness + ratio).clamp(0.0, 1.0);
       ScreenBrightness().setScreenBrightness(newVal);
       setState(() => _gestureTip = '亮度 ${(newVal * 100).toInt()}%');
@@ -429,40 +450,19 @@ class _PlayerPageState extends State<PlayerPage> {
       setState(() => _gestureTip = '音量 ${(newVal * 100).toInt()}%');
     }
   }
+  void _onVerticalDragEnd(DragEndDetails details) { _isDragging = false; _gestureTipTimer?.cancel(); setState(() => _gestureTip = null); }
 
-  void _onVerticalDragEnd(DragEndDetails details) {
-    _isDragging = false;
-    _gestureTipTimer?.cancel();
-    setState(() => _gestureTip = null);
-  }
-
-  // ========== 修复后的 DLNA 投屏 ==========
   Future<void> _castToDevice() async {
     if (_resolvedUrl == null) return;
-    
-    // 显示加载框
     showDialog(context: context, barrierDismissible: false, builder: (_) => const Center(child: CircularProgressIndicator()));
-    
     final searcher = DLNAManager();
     try {
-      // 启动搜索，返回 DeviceManager
       final manager = await searcher.start();
       final Map<String, DLNADevice> deviceMap = {};
-      
-      // 监听设备流
-      final subscription = manager.devices.stream.listen((deviceList) {
-        deviceList.forEach((key, value) {
-          deviceMap[key] = value;
-        });
-      });
-      
-      // 等待 3 秒收集设备
+      final subscription = manager.devices.stream.listen((deviceList) => deviceList.forEach((key, value) => deviceMap[key] = value));
       await Future.delayed(const Duration(seconds: 3));
-      
       if (!mounted) return;
-      Navigator.pop(context); // 关闭加载框
-      
-      // 停止搜索
+      Navigator.pop(context);
       searcher.stop();
       await subscription.cancel();
       
@@ -471,7 +471,6 @@ class _PlayerPageState extends State<PlayerPage> {
         return;
       }
       
-      // 显示设备列表
       showModalBottomSheet(
         context: context,
         builder: (ctx) => ListView.builder(
@@ -480,27 +479,20 @@ class _PlayerPageState extends State<PlayerPage> {
             final device = deviceMap.values.elementAt(i);
             return ListTile(
               leading: const Icon(Icons.tv),
-              // 核心修复：移除不存在的 modelName 属性
               title: Text(device.info.friendlyName),
               onTap: () async {
-                Navigator.pop(ctx); // 关闭底部弹窗
-                // 显示投屏加载框
+                Navigator.pop(ctx);
                 showDialog(context: context, barrierDismissible: false, builder: (_) => const Center(child: CircularProgressIndicator()));
                 try {
-                  // 推送视频
                   await device.setUrl(_resolvedUrl!, title: widget.title);
                   await device.play();
-                  
                   if (mounted) {
                     Navigator.pop(context);
                     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已推送到电视')));
-                    _controller?.pause(); // 本地暂停
+                    _controller?.pause();
                   }
                 } catch (e) {
-                  if (mounted) {
-                    Navigator.pop(context);
-                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('投屏失败: $e')));
-                  }
+                  if (mounted) { Navigator.pop(context); ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('投屏失败: $e'))); }
                 }
               },
             );
@@ -508,14 +500,10 @@ class _PlayerPageState extends State<PlayerPage> {
         ),
       );
     } catch (e) {
-      if (mounted) {
-        Navigator.pop(context); // 关闭加载框
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('搜索设备失败: $e')));
-      }
+      if (mounted) { Navigator.pop(context); ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('搜索设备失败: $e'))); }
     }
   }
 
-  // ========== 其他功能 (弹幕/OP) ==========
   Future<void> _markOpEnd() async {
     if (_controller == null) return;
     final current = _controller!.value.position;
@@ -538,27 +526,19 @@ class _PlayerPageState extends State<PlayerPage> {
             children: [
               TextField(controller: textController, decoration: const InputDecoration(labelText: '屏蔽词 (逗号分隔)')),
               const SizedBox(height: 16),
-              Row(
-                children: [
-                  const Text('透明度'),
-                  Expanded(child: Slider(value: tempOpacity, min: 0.2, max: 1.0, onChanged: (v) => setDialogState(() => tempOpacity = v))),
-                ],
-              )
+              Row(children: [const Text('透明度'), Expanded(child: Slider(value: tempOpacity, min: 0.2, max: 1.0, onChanged: (v) => setDialogState(() => tempOpacity = v)))]),
             ],
           ),
           actions: [
             TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
-            FilledButton(
-              onPressed: () async {
-                final words = textController.text.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
-                final prefs = await SharedPreferences.getInstance();
-                await prefs.setStringList('danmaku_block_words', words);
-                await prefs.setDouble('danmaku_opacity', tempOpacity);
-                setState(() { _blockWords = words; _danmakuOpacity = tempOpacity; });
-                if (ctx.mounted) Navigator.pop(ctx);
-              },
-              child: const Text('保存'),
-            )
+            FilledButton(onPressed: () async {
+              final words = textController.text.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+              final prefs = await SharedPreferences.getInstance();
+              await prefs.setStringList('danmaku_block_words', words);
+              await prefs.setDouble('danmaku_opacity', tempOpacity);
+              setState(() { _blockWords = words; _danmakuOpacity = tempOpacity; });
+              if (ctx.mounted) Navigator.pop(ctx);
+            }, child: const Text('保存')),
           ],
         ),
       ),
@@ -571,11 +551,7 @@ class _PlayerPageState extends State<PlayerPage> {
     if (data != null) {
       try {
         final List<dynamic> list = jsonDecode(data);
-        if (mounted) {
-          setState(() {
-            _danmakus = list.map((e) => DanmakuItem(text: e['text'], time: Duration(milliseconds: e['time']), color: Colors.white)).toList();
-          });
-        }
+        if (mounted) setState(() => _danmakus = list.map((e) => DanmakuItem(text: e['text'], time: Duration(milliseconds: e['time']), color: Colors.white)).toList());
       } catch (_) {}
     }
   }
@@ -583,15 +559,13 @@ class _PlayerPageState extends State<PlayerPage> {
   Future<void> _saveDanmakus() async {
     final prefs = await SharedPreferences.getInstance();
     _danmakus.sort((a, b) => a.time.compareTo(b.time));
-    final list = _danmakus.map((e) => {'text': e.text, 'time': e.time.inMilliseconds}).toList();
-    await prefs.setString(_danmakuKey, jsonEncode(list));
+    await prefs.setString(_danmakuKey, jsonEncode(_danmakus.map((e) => {'text': e.text, 'time': e.time.inMilliseconds}).toList()));
   }
 
   Future<void> _sendDanmaku() async {
     final text = _danmakuController.text.trim();
     if (text.isEmpty || _controller == null) return;
-    final newItem = DanmakuItem(text: text, time: _controller!.value.position);
-    setState(() { _danmakus.add(newItem); _showDanmakuInput = false; _danmakuController.clear(); });
+    setState(() { _danmakus.add(DanmakuItem(text: text, time: _controller!.value.position)); _showDanmakuInput = false; _danmakuController.clear(); });
     await _saveDanmakus();
     FocusScope.of(context).unfocus();
   }
@@ -602,11 +576,9 @@ class _PlayerPageState extends State<PlayerPage> {
       if (result == null || result.files.single.path == null) return;
       final file = File(result.files.single.path!);
       if (await file.length() > 10 * 1024 * 1024) throw Exception('文件过大，最大支持 10MB');
-      final content = await file.readAsString();
-      final dynamic decoded = jsonDecode(content);
+      final dynamic decoded = jsonDecode(await file.readAsString());
       if (decoded is! List) throw Exception('JSON 格式错误，必须是数组');
-      int importCount = 0;
-      int skipCount = 0;
+      int importCount = 0; int skipCount = 0;
       for (var item in decoded) {
         try {
           if (item is Map && item['time'] != null && item['text'] != null) {
@@ -617,11 +589,7 @@ class _PlayerPageState extends State<PlayerPage> {
         } catch (_) { skipCount++; }
       }
       await _saveDanmakus();
-      if (mounted) {
-        String msg = '成功导入 $importCount 条弹幕！';
-        if (skipCount > 0) msg += ' (跳过 $skipCount 条无效数据)';
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-      }
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('成功导入 $importCount 条弹幕！${skipCount > 0 ? " (跳过 $skipCount 条无效数据)" : ""}')));
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('导入失败: $e'), backgroundColor: Colors.red));
     }
@@ -633,10 +601,8 @@ class _PlayerPageState extends State<PlayerPage> {
       final image = await boundary.toImage(pixelRatio: 2.0);
       final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
       if (byteData == null) return;
-      final Uint8List pngBytes = byteData.buffer.asUint8List();
-      final dir = await getTemporaryDirectory();
-      final file = File('${dir.path}/anime_share_${DateTime.now().millisecondsSinceEpoch}.png');
-      await file.writeAsBytes(pngBytes);
+      final file = File('${(await getTemporaryDirectory()).path}/anime_share_${DateTime.now().millisecondsSinceEpoch}.png');
+      await file.writeAsBytes(byteData.buffer.asUint8List());
       await Share.shareXFiles([XFile(file.path)], text: '我在看《${widget.animeTitle}》- ${widget.title}');
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('截图失败: $e')));
@@ -654,45 +620,29 @@ class _PlayerPageState extends State<PlayerPage> {
     if (_controller != null) {
       _controller!.setPlaybackSpeed(speed);
       setState(() => _playbackSpeed = speed);
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setDouble('playback_speed', speed);
+      await (await SharedPreferences.getInstance()).setDouble('playback_speed', speed);
     }
   }
 
   void _startSleepTimer(int minutes) {
-    _sleepTimer?.cancel();
-    _sleepTimer = null;
+    _sleepTimer?.cancel(); _sleepTimer = null;
     if (minutes == 0) { setState(() => _sleepMinutesRemaining = 0); return; }
     setState(() => _sleepMinutesRemaining = minutes);
     _sleepTimer = Timer.periodic(const Duration(minutes: 1), (timer) {
       if (_sleepMinutesRemaining <= 1) {
-        _sleepTimer?.cancel();
-        _sleepTimer = null;
-        _controller?.pause();
-        if (mounted) {
-          setState(() => _sleepMinutesRemaining = 0);
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('定时关闭已生效，视频已暂停')));
-        }
+        _sleepTimer?.cancel(); _sleepTimer = null; _controller?.pause();
+        if (mounted) { setState(() => _sleepMinutesRemaining = 0); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('定时关闭已生效，视频已暂停'))); }
       } else { if (mounted) setState(() => _sleepMinutesRemaining--); }
     });
   }
 
   @override
   void dispose() {
-    _sleepTimer?.cancel();
-    _gestureTipTimer?.cancel();
-    _progressTimer?.cancel();
-    _danmakuController.dispose();
-    
+    _sleepTimer?.cancel(); _gestureTipTimer?.cancel(); _progressTimer?.cancel(); _danmakuController.dispose();
     if (_controller != null && _controller!.value.isInitialized) {
-       SharedPreferences.getInstance().then((prefs) {
-         prefs.setInt(_progressKey, _controller!.value.position.inMilliseconds);
-       });
+       SharedPreferences.getInstance().then((prefs) => prefs.setInt(_progressKey, _controller!.value.position.inMilliseconds));
     }
-    
-    _controller?.removeListener(() {});
-    _controller?.dispose();
-    _controller = null;
+    _controller?.removeListener(() {}); _controller?.dispose(); _controller = null;
     ScreenBrightness().resetScreenBrightness();
     super.dispose();
   }
@@ -707,9 +657,11 @@ class _PlayerPageState extends State<PlayerPage> {
         title: Text(widget.title, style: const TextStyle(fontSize: 16)),
         actions: [
           IconButton(icon: const Icon(Icons.swap_horiz), tooltip: '一键换源', onPressed: _showChangeSourceSheet),
-          IconButton(icon: const Icon(Icons.subtitles), tooltip: '加载字幕', onPressed: _loadSubtitleFile),
-          IconButton(icon: const Icon(Icons.screenshot_monitor), tooltip: '投屏', onPressed: _controller != null && _controller!.value.isInitialized ? _castToDevice : null),
-          IconButton(icon: const Icon(Icons.camera_alt_outlined), tooltip: '截图分享', onPressed: _controller != null && _controller!.value.isInitialized ? _shareScreenshot : null),
+          if (_controller != null && _controller!.value.isInitialized) ...[
+            IconButton(icon: const Icon(Icons.subtitles), tooltip: '加载字幕', onPressed: _loadSubtitleFile),
+            IconButton(icon: const Icon(Icons.screenshot_monitor), tooltip: '投屏', onPressed: _castToDevice),
+            IconButton(icon: const Icon(Icons.camera_alt_outlined), tooltip: '截图分享', onPressed: _shareScreenshot),
+          ],
           PopupMenuButton<String>(
             icon: const Icon(Icons.more_vert),
             onSelected: (value) {
@@ -717,16 +669,21 @@ class _PlayerPageState extends State<PlayerPage> {
               else if (value == 'danmaku_settings') _showDanmakuSettings();
               else if (value == 'mark_op') _markOpEnd();
               else if (value.startsWith('sleep_')) _startSleepTimer(int.parse(value.split('_')[1]));
+              else if (value == 'open_external' && _resolvedUrl != null) _openExternal(_resolvedUrl!);
             },
             itemBuilder: (context) => [
-              const PopupMenuItem(value: 'mark_op', child: Text('📍 记录当前为片头结束')),
-              const PopupMenuItem(value: 'danmaku_settings', child: Text('⚙️ 弹幕设置(屏蔽词/透明度)')),
-              const PopupMenuItem(value: 'import_danmaku', child: Text('📥 导入本地弹幕 (JSON)')),
-              const PopupMenuDivider(),
-              const PopupMenuItem(value: 'sleep_15', child: Text('15分钟后暂停')),
-              const PopupMenuItem(value: 'sleep_30', child: Text('30分钟后暂停')),
-              const PopupMenuItem(value: 'sleep_60', child: Text('60分钟后暂停')),
-              const PopupMenuItem(value: 'sleep_0', child: Text('取消定时')),
+              if (_controller == null || !_controller!.value.isInitialized)
+                const PopupMenuItem(value: 'open_external', child: Text('🌐 用外部浏览器打开')),
+              if (_controller != null && _controller!.value.isInitialized) ...[
+                const PopupMenuItem(value: 'mark_op', child: Text('📍 记录当前为片头结束')),
+                const PopupMenuItem(value: 'danmaku_settings', child: Text('⚙️ 弹幕设置(屏蔽词/透明度)')),
+                const PopupMenuItem(value: 'import_danmaku', child: Text('📥 导入本地弹幕 (JSON)')),
+                const PopupMenuDivider(),
+                const PopupMenuItem(value: 'sleep_15', child: Text('15分钟后暂停')),
+                const PopupMenuItem(value: 'sleep_30', child: Text('30分钟后暂停')),
+                const PopupMenuItem(value: 'sleep_60', child: Text('60分钟后暂停')),
+                const PopupMenuItem(value: 'sleep_0', child: Text('取消定时')),
+              ],
             ],
           ),
         ],
@@ -741,25 +698,105 @@ class _PlayerPageState extends State<PlayerPage> {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Text('解析失败：$_error', style: const TextStyle(color: Colors.white)),
+                        Text('解析提示：$_error', style: const TextStyle(color: Colors.white)),
                         const SizedBox(height: 16),
                         FilledButton(onPressed: () => _openExternal(_resolvedUrl ?? widget.episodeUrl), child: const Text('用外部浏览器打开')),
                       ],
                     ),
                   )
-                : _controller != null && _controller!.value.isInitialized
-                    ? _buildVideoPlayer()
-                    : Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(Icons.open_in_new, size: 48, color: Colors.white),
-                          const SizedBox(height: 12),
-                          const Text('解析结果为网页，需交给外部应用处理', style: TextStyle(color: Colors.white)),
-                          const SizedBox(height: 16),
-                          FilledButton(onPressed: () => _openExternal(_resolvedUrl ?? widget.episodeUrl), child: const Text('打开外部页面')),
-                        ],
-                      ),
+                : _isWebViewMode
+                    ? _buildWebViewPlayer()
+                    : _controller != null && _controller!.value.isInitialized
+                        ? _buildVideoPlayer()
+                        : const Text('加载中...', style: TextStyle(color: Colors.white)),
       ),
+    );
+  }
+
+  // ====== 内置网页播放器及媒体流监听 ======
+  Widget _buildWebViewPlayer() {
+    if (_resolvedUrl == null) return const Text('找不到播放地址', style: TextStyle(color: Colors.white));
+    return Stack(
+      children: [
+        InAppWebView(
+          initialUrlRequest: URLRequest(url: WebUri(_resolvedUrl!)),
+          initialSettings: InAppWebViewSettings(
+            javaScriptEnabled: true,
+            mediaPlaybackRequiresUserGesture: false,
+            allowsInlineMediaPlayback: true,
+            useHybridComposition: true,
+          ),
+          onWebViewCreated: (controller) {
+            // 注册监听回调
+            controller.addJavaScriptHandler(
+              handlerName: 'mediaSniffed',
+              callback: (args) {
+                if (args.isNotEmpty) {
+                  _handleSniffedUrl(args[0].toString());
+                }
+              },
+            );
+          },
+          onLoadStop: (controller, url) async {
+            // 页面加载完成后注入监听脚本
+            await controller.evaluateJavascript(source: _sniffJs);
+          },
+        ),
+        
+        // 悬浮监听结果按钮
+        if (_sniffedUrls.isNotEmpty)
+          Positioned(
+            bottom: 30,
+            right: 20,
+            child: FloatingActionButton.extended(
+              onPressed: () {
+                showModalBottomSheet(
+                  context: context,
+                  builder: (ctx) => Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Padding(
+                        padding: EdgeInsets.all(16),
+                        child: Text(
+                          '检测到以下公开媒体流（仅支持无 DRM 保护的内容）',
+                          style: TextStyle(fontSize: 12, color: Colors.grey),
+                        ),
+                      ),
+                      Flexible(
+                        child: ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: _sniffedUrls.length,
+                          itemBuilder: (_, i) {
+                            final url = _sniffedUrls.elementAt(i);
+                            final isHls = url.toLowerCase().contains('.m3u8');
+                            return ListTile(
+                              leading: Icon(
+                                isHls ? Icons.stream : Icons.movie,
+                                color: Colors.deepPurpleAccent,
+                              ),
+                              title: Text(
+                                isHls ? 'HLS 媒体流 (m3u8)' : '视频流',
+                                style: const TextStyle(fontWeight: FontWeight.bold),
+                              ),
+                              subtitle: Text(url, maxLines: 1, overflow: TextOverflow.ellipsis),
+                              onTap: () {
+                                Navigator.pop(ctx);
+                                _initPlayer(url); // 切换到内置播放器
+                              },
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+              backgroundColor: Colors.deepPurpleAccent,
+              icon: const Icon(Icons.radar, color: Colors.white),
+              label: Text('发现 ${_sniffedUrls.length} 个媒体流', style: const TextStyle(color: Colors.white)),
+            ),
+          ),
+      ],
     );
   }
 
@@ -780,106 +817,32 @@ class _PlayerPageState extends State<PlayerPage> {
         child: Stack(
           alignment: Alignment.center,
           children: [
-            AspectRatio(
-              aspectRatio: _controller!.value.aspectRatio,
-              child: VideoPlayer(_controller!),
-            ),
-            
+            AspectRatio(aspectRatio: _controller!.value.aspectRatio, child: VideoPlayer(_controller!)),
             if (_subtitleEnabled && _currentSubtitleText != null && _currentSubtitleText!.isNotEmpty)
-              Positioned(
-                bottom: 80,
-                left: 20,
-                right: 20,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(4)),
-                  child: Text(
-                    _currentSubtitleText!,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold, shadows: [Shadow(color: Colors.black, blurRadius: 2, offset: Offset(1, 1))]),
-                  ),
-                ),
-              ),
-
+              Positioned(bottom: 80, left: 20, right: 20, child: Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6), decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(4)), child: Text(_currentSubtitleText!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold, shadows: [Shadow(color: Colors.black, blurRadius: 2, offset: Offset(1, 1))])))),
             if (_showSkipOpBtn && _opEndTime != null)
-              Positioned(
-                right: 16,
-                bottom: 120,
-                child: ElevatedButton(
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.black54, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20))),
-                  onPressed: () { _controller!.seekTo(_opEndTime!); setState(() => _showSkipOpBtn = false); },
-                  child: Text('跳过片头 ${_formatDuration(_opEndTime! - _controller!.value.position)}'),
-                ),
-              ),
-            
+              Positioned(right: 16, bottom: 120, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.black54, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20))), onPressed: () { _controller!.seekTo(_opEndTime!); setState(() => _showSkipOpBtn = false); }, child: Text('跳过片头 ${_formatDuration(_opEndTime! - _controller!.value.position)}'))),
             if (_danmakuEnabled)
-              DanmakuOverlay(
-                currentPosition: _controller!.value.position,
-                danmakus: _danmakus,
-                isPlaying: _controller!.value.isPlaying,
-                blockWords: _blockWords,
-                opacity: _danmakuOpacity,
-              ),
-
+              DanmakuOverlay(currentPosition: _controller!.value.position, danmakus: _danmakus, isPlaying: _controller!.value.isPlaying, blockWords: _blockWords, opacity: _danmakuOpacity),
             if (_gestureTip != null)
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                decoration: BoxDecoration(color: Colors.black.withOpacity(0.7), borderRadius: BorderRadius.circular(8)),
-                child: Text(_gestureTip!, style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
-              ),
-
+              Container(padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12), decoration: BoxDecoration(color: Colors.black.withOpacity(0.7), borderRadius: BorderRadius.circular(8)), child: Text(_gestureTip!, style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold))),
             Positioned(
-              bottom: 0,
-              left: 0,
-              right: 0,
+              bottom: 0, left: 0, right: 0,
               child: Container(
                 padding: const EdgeInsets.all(16),
                 decoration: const BoxDecoration(gradient: LinearGradient(colors: [Colors.transparent, Colors.black87], begin: Alignment.topCenter, end: Alignment.bottomCenter)),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    if (_controller!.value.duration.inSeconds > 0)
-                      DanmakuHeatmap(danmakus: _danmakus, totalDuration: _controller!.value.duration, currentPosition: _controller!.value.position),
-                    
+                    if (_controller!.value.duration.inSeconds > 0) DanmakuHeatmap(danmakus: _danmakus, totalDuration: _controller!.value.duration, currentPosition: _controller!.value.position),
                     if (_showDanmakuInput)
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextField(
-                              controller: _danmakuController,
-                              autofocus: true,
-                              style: const TextStyle(color: Colors.white),
-                              decoration: const InputDecoration(hintText: '发一条友善的弹幕...', hintStyle: TextStyle(color: Colors.white54), filled: true, fillColor: Colors.white12, border: OutlineInputBorder(borderSide: BorderSide.none), contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8)),
-                              onSubmitted: (_) => _sendDanmaku(),
-                            ),
-                          ),
-                          IconButton(icon: const Icon(Icons.send, color: Colors.deepPurpleAccent), onPressed: _sendDanmaku),
-                        ],
-                      ),
+                      Row(children: [Expanded(child: TextField(controller: _danmakuController, autofocus: true, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(hintText: '发一条友善的弹幕...', hintStyle: TextStyle(color: Colors.white54), filled: true, fillColor: Colors.white12, border: OutlineInputBorder(borderSide: BorderSide.none), contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8)), onSubmitted: (_) => _sendDanmaku())), IconButton(icon: const Icon(Icons.send, color: Colors.deepPurpleAccent), onPressed: _sendDanmaku)]),
                     VideoProgressIndicator(_controller!, allowScrubbing: true, colors: const VideoProgressColors(playedColor: Colors.deepPurpleAccent)),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Row(
-                          children: [
-                            IconButton(icon: Icon(_controller!.value.isPlaying ? Icons.pause : Icons.play_arrow, color: Colors.white), onPressed: () { setState(() { _controller!.value.isPlaying ? _controller!.pause() : _controller!.play(); }); }),
-                            IconButton(icon: const Icon(Icons.chat_bubble_outline, color: Colors.white), onPressed: () { setState(() => _showDanmakuInput = !_showDanmakuInput); }),
-                            Text('${_formatDuration(_controller!.value.position)} / ${_formatDuration(_controller!.value.duration)}', style: const TextStyle(color: Colors.white, fontSize: 12)),
-                          ],
-                        ),
-                        Row(
-                          children: [0.5, 1.0, 1.5, 2.0].map((speed) {
-                            return GestureDetector(
-                              onTap: () => _setSpeed(speed),
-                              child: Container(
-                                margin: const EdgeInsets.symmetric(horizontal: 4),
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                decoration: BoxDecoration(color: _playbackSpeed == speed ? Colors.deepPurple : Colors.white24, borderRadius: BorderRadius.circular(4)),
-                                child: Text('${speed}x', style: const TextStyle(color: Colors.white, fontSize: 12)),
-                              ),
-                            );
-                          }).toList(),
-                        ),
+                        Row(children: [IconButton(icon: Icon(_controller!.value.isPlaying ? Icons.pause : Icons.play_arrow, color: Colors.white), onPressed: () { setState(() { _controller!.value.isPlaying ? _controller!.pause() : _controller!.play(); }); }), IconButton(icon: const Icon(Icons.chat_bubble_outline, color: Colors.white), onPressed: () { setState(() => _showDanmakuInput = !_showDanmakuInput); }), Text('${_formatDuration(_controller!.value.position)} / ${_formatDuration(_controller!.value.duration)}', style: const TextStyle(color: Colors.white, fontSize: 12))]),
+                        Row(children: [0.5, 1.0, 1.5, 2.0].map((speed) { return GestureDetector(onTap: () => _setSpeed(speed), child: Container(margin: const EdgeInsets.symmetric(horizontal: 4), padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), decoration: BoxDecoration(color: _playbackSpeed == speed ? Colors.deepPurple : Colors.white24, borderRadius: BorderRadius.circular(4)), child: Text('${speed}x', style: const TextStyle(color: Colors.white, fontSize: 12)))); }).toList()),
                       ],
                     ),
                   ],

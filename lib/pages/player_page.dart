@@ -480,8 +480,8 @@ class _PlayerPageState extends State<PlayerPage> {
             final device = deviceMap.values.elementAt(i);
             return ListTile(
               leading: const Icon(Icons.tv),
-              title: Text(device.info.friendlyName), // 使用正确的设备名称属性
-              subtitle: Text(device.info.modelName ?? ''), // 可以显示型号作为副标题
+              // 核心修复：移除不存在的 modelName 属性
+              title: Text(device.info.friendlyName),
               onTap: () async {
                 Navigator.pop(ctx); // 关闭底部弹窗
                 // 显示投屏加载框

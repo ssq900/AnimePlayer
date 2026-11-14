@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 
 class DanmakuItem {
@@ -6,18 +7,34 @@ class DanmakuItem {
   final Color color;
 
   DanmakuItem({required this.text, required this.time, this.color = Colors.white});
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DanmakuItem &&
+          runtimeType == other.runtimeType &&
+          text == other.text &&
+          time == other.time &&
+          color == other.color;
+
+  @override
+  int get hashCode => text.hashCode ^ time.hashCode ^ color.hashCode;
 }
 
 class DanmakuOverlay extends StatefulWidget {
   final Duration currentPosition;
   final List<DanmakuItem> danmakus;
   final bool isPlaying;
+  final List<String> blockWords; // 新增：屏蔽词列表
+  final double opacity; // 新增：透明度
 
   const DanmakuOverlay({
     super.key,
     required this.currentPosition,
     required this.danmakus,
     required this.isPlaying,
+    this.blockWords = const [],
+    this.opacity = 1.0,
   });
 
   @override
@@ -25,39 +42,63 @@ class DanmakuOverlay extends StatefulWidget {
 }
 
 class _DanmakuOverlayState extends State<DanmakuOverlay> {
-  // 简单实现：记录已经发射过的弹幕，防止重复发射
-  final Set<String> _emittedIds = {};
-  // 正在屏幕上飘的弹幕
+  final Set<DanmakuItem> _emittedItems = {};
   final List<DanmakuItem> _activeDanmakus = [];
+  
+  final List<DateTime> _trackReleaseTimes = List.generate(6, (_) => DateTime.now());
 
   @override
   void didUpdateWidget(covariant DanmakuOverlay oldWidget) {
     super.didUpdateWidget(oldWidget);
-    
-    if (!widget.isPlaying) return; // 暂停时不发射新弹幕
+    if (!widget.isPlaying) return;
 
-    // 进度重置（拖动进度条）时，清空屏幕
     if ((widget.currentPosition - oldWidget.currentPosition).abs() > const Duration(seconds: 2)) {
-      _emittedIds.clear();
+      _emittedItems.clear();
       _activeDanmakus.clear();
     }
 
-    // 查找当前时间点应该出现的弹幕（允许 1 秒误差）
     for (var dm in widget.danmakus) {
-      final dmId = '${dm.time.inMilliseconds}_${dm.text}';
-      if (!_emittedIds.contains(dmId) &&
-          widget.currentPosition >= dm.time &&
+      if (!_emittedItems.contains(dm) && 
+          widget.currentPosition >= dm.time && 
           widget.currentPosition < dm.time + const Duration(seconds: 1)) {
-        _emittedIds.add(dmId);
-        _activeDanmakus.add(dm);
-        // 动画结束后移除
-        Future.delayed(const Duration(seconds: 8), () {
-          if (mounted) {
-            setState(() => _activeDanmakus.remove(dm));
+        
+        // 核心修复：屏蔽词过滤
+        bool isBlocked = false;
+        for (var word in widget.blockWords) {
+          if (word.isNotEmpty && dm.text.contains(word)) {
+            isBlocked = true;
+            break;
           }
+        }
+        if (isBlocked) {
+           _emittedItems.add(dm); // 标记为已处理，避免反复拦截
+           continue;
+        }
+
+        _emittedItems.add(dm);
+        _activeDanmakus.add(dm);
+        
+        Future.delayed(const Duration(seconds: 8), () {
+          if (mounted) setState(() => _activeDanmakus.remove(dm));
         });
       }
     }
+  }
+
+  int _allocateTrack() {
+    final now = DateTime.now();
+    int bestTrack = 0;
+    Duration minWait = const Duration(hours: 1);
+    
+    for (int i = 0; i < _trackReleaseTimes.length; i++) {
+      final diff = _trackReleaseTimes[i].difference(now);
+      if (diff.isNegative) return i;
+      if (diff < minWait) {
+        minWait = diff;
+        bestTrack = i;
+      }
+    }
+    return bestTrack;
   }
 
   @override
@@ -65,15 +106,15 @@ class _DanmakuOverlayState extends State<DanmakuOverlay> {
     return IgnorePointer(
       child: Stack(
         children: _activeDanmakus.map((dm) {
-          // 随机生成一个垂直轨道 (0 - 5)
-          final track = dm.text.hashCode % 6;
+          final track = _allocateTrack();
+          _trackReleaseTimes[track] = DateTime.now().add(const Duration(seconds: 3));
           final top = 20.0 + (track * 30.0);
           
           return _AnimatedDanmaku(
-            key: ValueKey(dm),
-            text: dm.text,
-            top: top,
-            color: dm.color,
+            key: ValueKey(dm), 
+            text: dm.text, 
+            top: top, 
+            color: dm.color.withOpacity(widget.opacity),
           );
         }).toList(),
       ),
@@ -119,7 +160,6 @@ class _AnimatedDanmakuState extends State<_AnimatedDanmaku> with SingleTickerPro
       builder: (context, child) {
         return Positioned(
           top: widget.top,
-          // 从屏幕右侧进入，飘向左侧
           left: MediaQuery.of(context).size.width * _animation.value,
           child: child!,
         );

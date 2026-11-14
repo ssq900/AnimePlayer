@@ -5,34 +5,48 @@ import 'package:html/dom.dart';
 import '../models/rule.dart';
 
 class XPathService {
-  Future<String> fetchHtml(String url) async {
+  Future<String> fetchHtml(String url, {String? waitForSelector}) async {
     if (!url.startsWith('http://') && !url.startsWith('https://')) {
       throw Exception('非法的协议请求');
     }
 
     final completer = Completer<String>();
     HeadlessInAppWebView? webView;
+    bool isDisposed = false;
 
     try {
       webView = HeadlessInAppWebView(
         initialUrlRequest: URLRequest(url: WebUri(url)),
         initialSettings: InAppWebViewSettings(
           javaScriptEnabled: true,
-          mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
+          // 修复安全配置：兼容模式而非无条件允许
+          mixedContentMode: MixedContentMode.MIXED_CONTENT_COMPATIBILITY_MODE,
         ),
-        // 弃用 50% 提前抓取，容易抓到空壳
         onLoadStop: (controller, url) async {
-          if (!completer.isCompleted) {
-            try {
-              // 核心修复：强制等待 1000ms，给 Vue/React 等前端框架留出渲染 DOM 的时间
-              await Future.delayed(const Duration(milliseconds: 1000));
-              final html = await controller.evaluateJavascript(source: "document.documentElement.outerHTML");
-              if (html != null && !completer.isCompleted) {
-                completer.complete(html.toString());
+          if (completer.isCompleted) return;
+          try {
+            // 智能等待：如果有目标选择器，则轮询检查
+            if (waitForSelector != null && waitForSelector.isNotEmpty) {
+              for (int i = 0; i < 10; i++) {
+                if (completer.isCompleted) return;
+                final hasElement = await controller.evaluateJavascript(
+                    source: "document.querySelector('${waitForSelector.replaceAll("'", "\\'")}') != null"
+                );
+                if (hasElement == true) break;
+                await Future.delayed(const Duration(milliseconds: 500));
               }
-            } catch (e) {
-              if (!completer.isCompleted) completer.completeError(Exception("提取HTML失败: $e"));
+            } else {
+              // 无目标时的默认延迟
+              await Future.delayed(const Duration(milliseconds: 1000));
             }
+
+            if (completer.isCompleted) return;
+            final html = await controller.evaluateJavascript(source: "document.documentElement.outerHTML");
+            if (html != null && !completer.isCompleted) {
+              completer.complete(html.toString());
+            }
+          } catch (e) {
+            if (!completer.isCompleted) completer.completeError(Exception("提取HTML失败: $e"));
           }
         },
         onReceivedError: (controller, request, error) {
@@ -43,11 +57,18 @@ class XPathService {
       );
 
       await webView.run();
-      return await completer.future.timeout(const Duration(seconds: 30));
+      // 监听超时，如果超时，强制给 Completer 塞入错误，防止后续 await 永久挂起
+      return await completer.future.timeout(const Duration(seconds: 20), onTimeout: () {
+        if (!completer.isCompleted) {
+          completer.completeError(Exception('网页加载超时'));
+        }
+        return '';
+      });
     } catch (e) {
       throw Exception('请求异常: $e');
     } finally {
-      if (webView != null) {
+      if (webView != null && !isDisposed) {
+        isDisposed = true;
         try {
           await webView.dispose();
         } catch (_) {}
@@ -55,7 +76,8 @@ class XPathService {
     }
   }
 
-  Document _parse(String htmlText) => html_parser.parse(htmlText, encoding: 'utf-8');
+  // WebView 返回的已经是渲染后的标准 UTF-8，不需要 GBK 额外处理
+  Document _parse(String htmlText) => html_parser.parse(htmlText);
 
   Future<List<SearchResult>> search(AnimeRule rule, String keyword) async {
     if (rule.searchSelector.trim().isEmpty) return [];
@@ -69,7 +91,8 @@ class XPathService {
       searchUrl = '$searchUrl${sep}wd=$encoded';
     }
 
-    final htmlText = await fetchHtml(searchUrl);
+    // 传入目标选择器，让 WebView 智能等待该元素出现
+    final htmlText = await fetchHtml(searchUrl, waitForSelector: rule.animeLinkSelector);
     final doc = _parse(htmlText);
     final container = doc.querySelector(rule.searchSelector);
     if (container == null) return [];
@@ -98,7 +121,7 @@ class XPathService {
 
   Future<List<EpisodeItem>> fetchEpisodes(AnimeRule rule, String detailUrl) async {
     if (rule.episodeListSelector.trim().isEmpty) return [];
-    final htmlText = await fetchHtml(detailUrl);
+    final htmlText = await fetchHtml(detailUrl, waitForSelector: rule.episodeListSelector);
     final doc = _parse(htmlText);
     final list = doc.querySelectorAll(rule.episodeListSelector);
     return list.map((el) {
@@ -111,7 +134,7 @@ class XPathService {
 
   Future<String> resolveEpisodeLink(AnimeRule rule, String episodeUrl) async {
     if (rule.episodeLinkSelector.trim().isEmpty) return episodeUrl;
-    final htmlText = await fetchHtml(episodeUrl);
+    final htmlText = await fetchHtml(episodeUrl, waitForSelector: rule.episodeLinkSelector);
     final doc = _parse(htmlText);
     final el = doc.querySelector(rule.episodeLinkSelector);
     if (el == null) return episodeUrl;

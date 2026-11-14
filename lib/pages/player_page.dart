@@ -6,15 +6,19 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:share_plus/share_plus.dart'; // 新增
+import 'package:share_plus/share_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:fl_pip/fl_pip.dart';
+import 'package:dlna_dart/dlna.dart';
+import 'package:dlna_dart/dlna_device.dart';
 import '../models/rule.dart';
 import '../services/xpath_service.dart';
 import '../services/storage_service.dart';
 import '../widgets/danmaku_overlay.dart';
+import '../widgets/danmaku_heatmap.dart';
 
 class PlayerPage extends StatefulWidget {
   final AnimeRule rule;
@@ -37,7 +41,7 @@ class PlayerPage extends StatefulWidget {
 class _PlayerPageState extends State<PlayerPage> {
   final _xpath = XPathService();
   final _storage = StorageService();
-  final GlobalKey _globalKey = GlobalKey(); // 用于截图
+  final GlobalKey _globalKey = GlobalKey();
 
   VideoPlayerController? _controller;
   bool _loading = true;
@@ -52,10 +56,25 @@ class _PlayerPageState extends State<PlayerPage> {
   final _danmakuController = TextEditingController();
   bool _showDanmakuInput = false;
   bool _danmakuEnabled = true;
+  List<String> _blockWords = [];
+  double _danmakuOpacity = 1.0;
+
+  Duration? _opEndTime;
+  bool _showSkipOpBtn = false;
+
+  String get _danmakuKey => 'danmaku_${base64Url.encode(utf8.encode(widget.episodeUrl))}';
+  String get _opKey => 'op_end_${base64Url.encode(utf8.encode(widget.episodeUrl))}';
 
   @override
   void initState() {
     super.initState();
+    // 初始化画中画事件
+    FlPip.initialize();
+    FlPip.onPipChanged = (isPip) {
+      if (!isPip && mounted) {
+         // 如果从画中画回到全屏
+      }
+    };
     _init();
   }
 
@@ -63,6 +82,11 @@ class _PlayerPageState extends State<PlayerPage> {
     final prefs = await SharedPreferences.getInstance();
     _playbackSpeed = prefs.getDouble('playback_speed') ?? 1.0;
     _danmakuEnabled = prefs.getBool('danmaku_enabled') ?? true;
+    _blockWords = prefs.getStringList('danmaku_block_words') ?? [];
+    _danmakuOpacity = prefs.getDouble('danmaku_opacity') ?? 1.0;
+    final opMs = prefs.getInt(_opKey);
+    if (opMs != null) _opEndTime = Duration(milliseconds: opMs);
+
     await _resolve();
   }
 
@@ -95,7 +119,17 @@ class _PlayerPageState extends State<PlayerPage> {
         c.play();
         
         c.addListener(() {
-          if (mounted && _danmakuEnabled) setState(() {});
+          if (!mounted) return;
+          if (_danmakuEnabled) setState(() {});
+
+          if (_opEndTime != null) {
+            final current = c.value.position;
+            if (current < _opEndTime! && current > const Duration(seconds: 2)) {
+              if (!_showSkipOpBtn) setState(() => _showSkipOpBtn = true);
+            } else {
+              if (_showSkipOpBtn) setState(() => _showSkipOpBtn = false);
+            }
+          }
         });
       }
     } catch (e) {
@@ -110,30 +144,170 @@ class _PlayerPageState extends State<PlayerPage> {
     }
   }
 
+  // ========== DLNA 投屏 ==========
+  Future<void> _castToDevice() async {
+    if (_resolvedUrl == null) return;
+    
+    showDialog(context: context, barrierDismissible: false, builder: (_) => const Center(child: CircularProgressIndicator()));
+    final dlna = DLNAManager();
+    List<DLNADevice> devices = [];
+    try {
+      devices = await dlna.discover();
+    } catch (e) {
+      debugPrint('DLNA search failed: $e');
+    }
+    if (mounted) Navigator.pop(context);
+
+    if (devices.isEmpty) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('未找到局域网内的投屏设备')));
+      return;
+    }
+
+    if (!mounted) return;
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) {
+        return ListView.builder(
+          itemCount: devices.length,
+          itemBuilder: (_, i) {
+            final device = devices[i];
+            return ListTile(
+              leading: const Icon(Icons.tv),
+              title: Text(device.name),
+              subtitle: Text(device.ip ?? ''),
+              onTap: () async {
+                Navigator.pop(ctx);
+                showDialog(context: context, barrierDismissible: false, builder: (_) => const Center(child: CircularProgressIndicator()));
+                try {
+                  // 核心：推送视频直链到电视
+                  await dlna.pushVideo(device, _resolvedUrl!);
+                  if (mounted) {
+                    Navigator.pop(context);
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已推送到电视')));
+                    _controller?.pause(); // 本地暂停
+                  }
+                } catch (e) {
+                  if (mounted) {
+                    Navigator.pop(context);
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('投屏失败: $e')));
+                  }
+                }
+              },
+            );
+          },
+        );
+      },
+    );
+  }
+
+  // ========== 画中画 ==========
+  void _enterPip() async {
+    if (_controller == null || !_controller!.value.isInitialized) return;
+    try {
+      // 注意：fl_pip 需要 Android 8.0+ 才原生支持，Android 7 上会抛异常，我们用 try-catch 包住
+      await FlPip.show();
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('画中画不可用: 需要 Android 8.0+')));
+    }
+  }
+
+  // ========== 弹幕与 OP 逻辑 ==========
+  Future<void> _markOpEnd() async {
+    if (_controller == null) return;
+    final current = _controller!.value.position;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_opKey, current.inMilliseconds);
+    setState(() => _opEndTime = current);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已记录片头结束点：${_formatDuration(current)}')),
+      );
+    }
+  }
+
+  Future<void> _showDanmakuSettings() async {
+    final textController = TextEditingController(text: _blockWords.join(', '));
+    double tempOpacity = _danmakuOpacity;
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          return AlertDialog(
+            title: const Text('弹幕设置'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: textController,
+                  decoration: const InputDecoration(
+                    labelText: '屏蔽词 (逗号分隔)',
+                    hintText: '例如: 前, 透, 举报',
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    const Text('透明度'),
+                    Expanded(
+                      child: Slider(
+                        value: tempOpacity,
+                        min: 0.2,
+                        max: 1.0,
+                        onChanged: (v) => setDialogState(() => tempOpacity = v),
+                      ),
+                    ),
+                  ],
+                )
+              ],
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+              FilledButton(
+                onPressed: () async {
+                  final words = textController.text.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+                  final prefs = await SharedPreferences.getInstance();
+                  await prefs.setStringList('danmaku_block_words', words);
+                  await prefs.setDouble('danmaku_opacity', tempOpacity);
+                  setState(() {
+                    _blockWords = words;
+                    _danmakuOpacity = tempOpacity;
+                  });
+                  if (ctx.mounted) Navigator.pop(ctx);
+                },
+                child: const Text('保存'),
+              )
+            ],
+          );
+        }
+      ),
+    );
+  }
+
   Future<void> _loadDanmakus() async {
     final prefs = await SharedPreferences.getInstance();
-    final key = 'danmaku_${widget.episodeUrl.hashCode}';
-    final data = prefs.getString(key);
+    final data = prefs.getString(_danmakuKey);
     if (data != null) {
       try {
         final List<dynamic> list = jsonDecode(data);
-        setState(() {
-          _danmakus = list.map((e) => DanmakuItem(
-            text: e['text'],
-            time: Duration(milliseconds: e['time']),
-            color: Colors.white,
-          )).toList();
-        });
+        if (mounted) {
+          setState(() {
+            _danmakus = list.map((e) => DanmakuItem(
+              text: e['text'],
+              time: Duration(milliseconds: e['time']),
+              color: Colors.white,
+            )).toList();
+          });
+        }
       } catch (_) {}
     }
   }
 
   Future<void> _saveDanmakus() async {
     final prefs = await SharedPreferences.getInstance();
-    final key = 'danmaku_${widget.episodeUrl.hashCode}';
     _danmakus.sort((a, b) => a.time.compareTo(b.time));
     final list = _danmakus.map((e) => {'text': e.text, 'time': e.time.inMilliseconds}).toList();
-    await prefs.setString(key, jsonEncode(list));
+    await prefs.setString(_danmakuKey, jsonEncode(list));
   }
 
   Future<void> _sendDanmaku() async {
@@ -157,7 +331,7 @@ class _PlayerPageState extends State<PlayerPage> {
     try {
       FilePickerResult? result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
-        allowedExtensions: ['json', 'txt'],
+        allowedExtensions: ['json'],
       );
 
       if (result == null || result.files.single.path == null) return;
@@ -168,45 +342,45 @@ class _PlayerPageState extends State<PlayerPage> {
       }
 
       final content = await file.readAsString();
-      final List<dynamic> data = jsonDecode(content);
-      int importCount = 0;
+      final dynamic decoded = jsonDecode(content);
+      
+      if (decoded is! List) throw Exception('JSON 格式错误，必须是数组');
 
-      for (var item in data) {
-        if (item['time'] != null && item['text'] != null) {
-          int ms = (item['time'] is double) 
-              ? (item['time'] * 1000).toInt() 
-              : (item['time'] as num).toInt();
-              
-          _danmakus.add(DanmakuItem(
-            text: item['text'].toString(),
-            time: Duration(milliseconds: ms),
-          ));
-          importCount++;
+      int importCount = 0;
+      int skipCount = 0;
+
+      for (var item in decoded) {
+        try {
+          if (item is Map && item['time'] != null && item['text'] != null) {
+            int ms = (item['time'] is double) ? (item['time'] * 1000).toInt() : (item['time'] as num).toInt();
+            _danmakus.add(DanmakuItem(text: item['text'].toString(), time: Duration(milliseconds: ms)));
+            importCount++;
+          } else {
+            skipCount++;
+          }
+        } catch (_) {
+          skipCount++;
         }
       }
 
       await _saveDanmakus();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('成功导入 $importCount 条弹幕！')),
-        );
+        String msg = '成功导入 $importCount 条弹幕！';
+        if (skipCount > 0) msg += ' (跳过 $skipCount 条无效数据)';
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('导入失败: $e'), backgroundColor: Colors.red),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('导入失败: $e'), backgroundColor: Colors.red));
       }
     }
   }
 
-  // 新增：截图并分享
   Future<void> _shareScreenshot() async {
     try {
       final boundary = _globalKey.currentContext!.findRenderObject() as RenderRepaintBoundary;
       final image = await boundary.toImage(pixelRatio: 2.0);
       final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-      
       if (byteData == null) return;
       final Uint8List pngBytes = byteData.buffer.asUint8List();
 
@@ -214,16 +388,9 @@ class _PlayerPageState extends State<PlayerPage> {
       final file = File('${dir.path}/anime_share_${DateTime.now().millisecondsSinceEpoch}.png');
       await file.writeAsBytes(pngBytes);
 
-      await Share.shareXFiles(
-        [XFile(file.path)],
-        text: '我在看《${widget.animeTitle}》- ${widget.title}',
-      );
+      await Share.shareXFiles([XFile(file.path)], text: '我在看《${widget.animeTitle}》- ${widget.title}');
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('截图失败: $e')),
-        );
-      }
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('截图失败: $e')));
     }
   }
 
@@ -249,10 +416,16 @@ class _PlayerPageState extends State<PlayerPage> {
 
   void _startSleepTimer(int minutes) {
     _sleepTimer?.cancel();
+    _sleepTimer = null;
+    if (minutes == 0) {
+      setState(() => _sleepMinutesRemaining = 0);
+      return;
+    }
     setState(() => _sleepMinutesRemaining = minutes);
     _sleepTimer = Timer.periodic(const Duration(minutes: 1), (timer) {
       if (_sleepMinutesRemaining <= 1) {
-        timer.cancel();
+        _sleepTimer?.cancel();
+        _sleepTimer = null;
         _controller?.pause();
         if (mounted) {
           setState(() => _sleepMinutesRemaining = 0);
@@ -268,7 +441,9 @@ class _PlayerPageState extends State<PlayerPage> {
   void dispose() {
     _sleepTimer?.cancel();
     _danmakuController.dispose();
+    _controller?.removeListener(() {});
     _controller?.dispose();
+    _controller = null;
     super.dispose();
   }
 
@@ -282,36 +457,31 @@ class _PlayerPageState extends State<PlayerPage> {
         title: Text(widget.title, style: const TextStyle(fontSize: 16)),
         actions: [
           IconButton(
+            icon: const Icon(Icons.screenshot_monitor),
+            tooltip: '投屏',
+            onPressed: _controller != null && _controller!.value.isInitialized ? _castToDevice : null,
+          ),
+          IconButton(
+            icon: const Icon(Icons.picture_in_picture_alt),
+            tooltip: '画中画',
+            onPressed: _enterPip,
+          ),
+          IconButton(
             icon: const Icon(Icons.camera_alt_outlined),
             tooltip: '截图分享',
             onPressed: _controller != null && _controller!.value.isInitialized ? _shareScreenshot : null,
           ),
-          IconButton(
-            icon: Icon(_danmakuEnabled ? Icons.subtitles : Icons.subtitles_off),
-            onPressed: () async {
-              setState(() => _danmakuEnabled = !_danmakuEnabled);
-              final prefs = await SharedPreferences.getInstance();
-              await prefs.setBool('danmaku_enabled', _danmakuEnabled);
-            },
-          ),
           PopupMenuButton<String>(
             icon: const Icon(Icons.more_vert),
             onSelected: (value) {
-              if (value == 'import_danmaku') {
-                _importDanmaku();
-                return;
-              }
-              if (value.startsWith('sleep_')) {
-                final min = int.parse(value.split('_')[1]);
-                if (min == 0) {
-                  _sleepTimer?.cancel();
-                  setState(() => _sleepMinutesRemaining = 0);
-                } else {
-                  _startSleepTimer(min);
-                }
-              }
+              if (value == 'import_danmaku') _importDanmaku();
+              else if (value == 'danmaku_settings') _showDanmakuSettings();
+              else if (value == 'mark_op') _markOpEnd();
+              else if (value.startsWith('sleep_')) _startSleepTimer(int.parse(value.split('_')[1]));
             },
             itemBuilder: (context) => [
+              const PopupMenuItem(value: 'mark_op', child: Text('📍 记录当前为片头结束')),
+              const PopupMenuItem(value: 'danmaku_settings', child: Text('⚙️ 弹幕设置(屏蔽词/透明度)')),
               const PopupMenuItem(value: 'import_danmaku', child: Text('📥 导入本地弹幕 (JSON)')),
               const PopupMenuDivider(),
               const PopupMenuItem(value: 'sleep_15', child: Text('15分钟后暂停')),
@@ -371,40 +541,31 @@ class _PlayerPageState extends State<PlayerPage> {
             child: VideoPlayer(_controller!),
           ),
           
-          // 分享卡片水印层 (仅仅用于截图，正常播放时透明)
-          Positioned(
-            left: 16,
-            bottom: 80,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  widget.animeTitle,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    shadows: [Shadow(color: Colors.black, blurRadius: 4, offset: Offset(1, 1))],
-                  ),
+          if (_showSkipOpBtn && _opEndTime != null)
+            Positioned(
+              right: 16,
+              bottom: 120,
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.black54,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  widget.title,
-                  style: const TextStyle(
-                    color: Colors.white70,
-                    fontSize: 14,
-                    shadows: [Shadow(color: Colors.black, blurRadius: 4, offset: Offset(1, 1))],
-                  ),
-                ),
-              ],
+                onPressed: () {
+                  _controller!.seekTo(_opEndTime!);
+                  setState(() => _showSkipOpBtn = false);
+                },
+                child: Text('跳过片头 ${_formatDuration(_opEndTime! - _controller!.value.position)}'),
+              ),
             ),
-          ),
           
           if (_danmakuEnabled)
             DanmakuOverlay(
               currentPosition: _controller!.value.position,
               danmakus: _danmakus,
               isPlaying: _controller!.value.isPlaying,
+              blockWords: _blockWords,
+              opacity: _danmakuOpacity,
             ),
 
           Positioned(
@@ -423,6 +584,14 @@ class _PlayerPageState extends State<PlayerPage> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  // ====== 高能进度条 ======
+                  if (_controller!.value.duration.inSeconds > 0)
+                    DanmakuHeatmap(
+                      danmakus: _danmakus,
+                      totalDuration: _controller!.value.duration,
+                      currentPosition: _controller!.value.position,
+                    ),
+                  
                   if (_showDanmakuInput)
                     Row(
                       children: [
@@ -515,9 +684,7 @@ class _PlayerPageState extends State<PlayerPage> {
     final uri = Uri.tryParse(url);
     if (uri == null) return;
     if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('无法打开链接')));
-      }
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('无法打开链接')));
     }
   }
 }

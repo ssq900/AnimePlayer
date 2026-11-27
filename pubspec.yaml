@@ -11,16 +11,14 @@ dependencies:
     sdk: flutter
   cupertino_icons: ^1.0.8
   
-  # === 我们新增的依赖 ===
+  # === 重构所需依赖 ===
   flutter_riverpod: ^2.6.1
   http: ^1.2.0
-  xpath: ^1.1.0
   xml: ^6.5.0
+  xpath_selector: ^0.4.4
   video_player: ^2.9.1
 
-  # 如果你的原项目用到了 webview 或存储，请在这里把原来的依赖加回来，例如：
-  # webview_flutter: ^4.7.0
-  # shared_preferences: ^2.2.2
+  # 如果你的原项目有其他依赖（如 webview_flutter），请在这里加回来
 
 dev_dependencies:
   flutter_test:

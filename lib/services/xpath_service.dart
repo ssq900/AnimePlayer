@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'package:http/http.dart' as http;
 import 'package:xml/xml.dart';
-import 'package:xpath/xpath.dart';
+import 'package:xpath_selector/xpath_selector.dart';
 import '../models/rule.dart';
 
 class XPathParseException implements Exception {
@@ -34,6 +34,7 @@ class XPathService {
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
   };
 
+  /// 统一搜索入口：先 HTTP，网络层失败降级 WebView（WebView 阶段串行）
   Future<List<SearchResult>> search(AnimeRule rule, String keyword) async {
     final url = buildSearchUrl(rule.baseUrl, keyword);
     String html;
@@ -61,6 +62,7 @@ class XPathService {
     return resp.body;
   }
 
+  /// ⚠️ 适配点：如果原项目有 WebView 抓取逻辑，请粘到这里
   Future<String> _fetchWithWebView(String url) async {
     throw UnimplementedError('请把原项目的 WebView 嗅探逻辑填入 _fetchWithWebView');
   }
@@ -85,8 +87,9 @@ class XPathService {
   List<XmlElement> findElements(XmlNode context, String expr) {
     if (expr.trim().isEmpty) return const [];
     try {
-      final nodes = context.xpath(expr);
-      return nodes.whereType<XmlElement>().toList();
+      final query = XPath(expr);
+      final results = query.query(context);
+      return results.map((r) => r.node).whereType<XmlElement>().toList();
     } catch (e) {
       throw XPathParseException('XPath "$expr" 执行失败: $e');
     }

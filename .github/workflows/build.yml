@@ -5,7 +5,7 @@ on:
     branches: [ "main", "master" ]
   pull_request:
     branches: [ "main", "master" ]
-  workflow_dispatch: # 允许手动点击运行
+  workflow_dispatch:
 
 jobs:
   build:
@@ -27,66 +27,59 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Recreate Android Folder & Restore Customizations
+      - name: Recreate Android Folder & Inject Mirrors
         run: |
-          # 1. 尝试备份，如果文件根本不存在则跳过（防止报错）
+          # 1. 备份配置 (如果存在)
           if [ -f android/app/src/main/AndroidManifest.xml ]; then
             cp android/app/src/main/AndroidManifest.xml AndroidManifest_backup.xml
           fi
-          if [ -f android/app/build.gradle ]; then
-            cp android/app/build.gradle android_app_build_gradle_backup
-          fi
-          if [ -f android/app/build.gradle.kts ]; then
-            cp android/app/build.gradle.kts android_app_build_gradle_kts_backup
-          fi
           
-          # 2. 彻底删除旧的残缺目录，重新生成
+          # 2. 彻底重建 Android 目录
           rm -rf android
           flutter create --platforms=android .
           
-          # 3. 还原配置（如果没有旧备份，就强行注入联网权限）
+          # 3. 还原 Manifest (或者注入网络权限)
           if [ -f AndroidManifest_backup.xml ]; then
             cp AndroidManifest_backup.xml android/app/src/main/AndroidManifest.xml
           else
-            # ⚠️ 核心注入：加上网络权限和允许 HTTP 明文请求
             sed -i 's#<application#<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>\n    <application#' android/app/src/main/AndroidManifest.xml
             sed -i 's#android:label="anime_aggregator"#android:label="anime_aggregator"\n        android:usesCleartextTraffic="true"#' android/app/src/main/AndroidManifest.xml
           fi
-          
-          # 4. 还原 build.gradle（如果有的话）
-          if [ -f android_app_build_gradle_backup ]; then
-            cp android_app_build_gradle_backup android/app/build.gradle
-            rm -f android/app/build.gradle.kts
-          elif [ -f android_app_build_gradle_kts_backup ]; then
-            cp android_app_build_gradle_kts_backup android/app/build.gradle.kts
-          fi
-          
-          # 清理临时文件
-          rm -f AndroidManifest_backup.xml android_app_build_gradle_backup android_app_build_gradle_kts_backup
+          rm -f AndroidManifest_backup.xml
 
-      - name: Configure Gradle Mirror
-        run: |
-          mkdir -p ~/.gradle
-          cat << 'EOF' > ~/.gradle/init.gradle
-          allprojects {
-              buildscript {
-                  repositories {
-                      maven { url 'https://maven.aliyun.com/repository/public' }
-                      maven { url 'https://maven.aliyun.com/repository/google' }
-                      maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
-                      google()
-                      mavenCentral()
-                  }
+          # 4. 核心修复：直接在 settings.gradle.kts 中注入阿里云镜像
+          cat << 'EOF' > android/settings.gradle.kts
+          pluginManagement {
+              val flutterSdkPath = run {
+                  val properties = java.util.Properties()
+                  file("local.properties").inputStream().use { properties.load(it) }
+                  val flutterSdkPath = properties.getProperty("flutter.sdk")
+                  require(flutterSdkPath != null) { "flutter.sdk not set in local.properties" }
+                  flutterSdkPath
               }
+              includeBuild("$flutterSdkPath/packages/flutter_tools/gradle")
+              
               repositories {
-                  maven { url 'https://maven.aliyun.com/repository/public' }
-                  maven { url 'https://maven.aliyun.com/repository/google' }
-                  maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
+                  maven { url = uri("https://maven.aliyun.com/repository/public") }
+                  maven { url = uri("https://maven.aliyun.com/repository/google") }
+                  maven { url = uri("https://maven.aliyun.com/repository/gradle-plugin") }
+                  maven { url = uri("https://storage.googleapis.com/download.flutter.io") }
                   google()
                   mavenCentral()
+                  gradlePluginPortal()
               }
           }
+          
+          plugins {
+              id("dev.flutter.flutter-plugin-loader") version "1.0.0"
+              id("com.android.application") version "8.9.1" apply false
+              id("org.jetbrains.kotlin.android") version "2.1.0" apply false
+          }
+          
+          include(":app")
           EOF
+
+      # ⚠️ 删掉了 Configure Gradle Mirror 步骤，直接用 settings.gradle.kts 里的配置
 
       - name: Flutter pub get
         run: flutter pub get

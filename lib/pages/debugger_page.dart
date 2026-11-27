@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:xml/xml.dart'; // ⚠️ 新增：需要用到 XmlText
 import '../services/xpath_service.dart';
 
 class DebuggerPage extends StatefulWidget {
@@ -42,20 +43,15 @@ class _DebuggerPageState extends State<DebuggerPage> {
     });
 
     try {
-      // 1. 抓取网页源码 (内置 HTTP 优先，WebView 降级，GBK 自动解码)
       final html = await _xpathService.fetchHtml(url);
-      
-      // 2. 解析为 XML 树
       final doc = _xpathService.parseHtml(html);
-      
-      // 3. 执行 XPath 查找
       final elements = _xpathService.findElements(doc, xpath);
 
       setState(() {
         _totalMatched = elements.length;
-        // 只取前 10 个展示预览，防止 UI 卡顿
         _matchedResults = elements.take(10).map((e) {
-          final text = e.innerText.trim().replaceAll('\n', ' ');
+          // ⚠️ 修复：使用安全的方式获取节点内的纯文本
+          final text = e.descendants.whereType<XmlText>().map((n) => n.value).join().trim().replaceAll('\n', ' ');
           final href = e.getAttribute('href')?.trim() ?? '无 href 属性';
           final shortText = text.length > 30 ? '${text.substring(0, 30)}...' : text;
           return '文本: $shortText\n链接: $href';
@@ -98,16 +94,11 @@ class _DebuggerPageState extends State<DebuggerPage> {
             ElevatedButton.icon(
               onPressed: _isLoading ? null : _runTest,
               icon: _isLoading
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
+                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
                   : const Icon(Icons.play_arrow),
               label: Text(_isLoading ? '正在抓取并解析...' : '开始测试'),
             ),
             const SizedBox(height: 24),
-
             if (_error != null)
               Container(
                 padding: const EdgeInsets.all(12),
@@ -116,20 +107,12 @@ class _DebuggerPageState extends State<DebuggerPage> {
                   border: Border.all(color: Colors.red),
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: Text(
-                  '❌ 测试失败:\n$_error',
-                  style: const TextStyle(color: Colors.red),
-                ),
+                child: Text('❌ 测试失败:\n$_error', style: const TextStyle(color: Colors.red)),
               ),
-
             if (_totalMatched > 0) ...[
               Text(
                 '✅ 匹配成功！共找到 $_totalMatched 个节点（仅展示前 10 个）',
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.green,
-                ),
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.green),
               ),
               const SizedBox(height: 12),
               ListView.separated(
@@ -141,18 +124,13 @@ class _DebuggerPageState extends State<DebuggerPage> {
                   return Container(
                     padding: const EdgeInsets.all(8),
                     color: Colors.grey.withOpacity(0.1),
-                    child: Text(
-                      '节点 ${index + 1}:\n${_matchedResults[index]}',
-                      style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
-                    ),
+                    child: Text('节点 ${index + 1}:\n${_matchedResults[index]}',
+                        style: const TextStyle(fontFamily: 'monospace', fontSize: 13)),
                   );
                 },
               ),
             ] else if (!_isLoading && _error == null && _urlController.text.isNotEmpty) ...[
-              const Text(
-                '⚠️ 没有匹配到任何节点，请检查 XPath 是否正确',
-                style: TextStyle(color: Colors.orange),
-              ),
+              const Text('⚠️ 没有匹配到任何节点，请检查 XPath 是否正确', style: TextStyle(color: Colors.orange)),
             ]
           ],
         ),

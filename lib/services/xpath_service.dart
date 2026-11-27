@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:xml/xml.dart';
+import 'package:html/parser.dart' as html_parser;
 import 'package:gbk_codec/gbk_codec.dart';
 import '../models/rule.dart';
 
@@ -36,14 +37,27 @@ class XPathService {
   };
 
   Future<List<SearchResult>> search(AnimeRule rule, String keyword) async {
+    _validateRule(rule);
     final url = buildSearchUrl(rule.baseUrl, keyword);
     String html;
     try {
       html = await _fetchHttp(url);
     } catch (_) {
-      html = await _webViewLock.run(() => _fetchWithWebView(url));
+      html = await _webViewLock.run(() => _fetchWithWebView(url)).timeout(
+        const Duration(seconds: 20), 
+        onTimeout: () => throw Exception('WebView 响应超时'),
+      );
     }
     return parseSearchPage(html, rule);
+  }
+
+  void _validateRule(AnimeRule rule) {
+    if (rule.searchSelector.trim().isEmpty || rule.animeLinkSelector.trim().isEmpty) {
+      throw XPathParseException('规则解析失败：选择器为空');
+    }
+    if (rule.searchSelector.contains('<') || rule.animeLinkSelector.contains('<')) {
+      throw XPathParseException('规则包含非法 HTML 字符');
+    }
   }
 
   String buildSearchUrl(String baseUrl, String keyword) {
@@ -58,7 +72,10 @@ class XPathService {
     try {
       return await _fetchHttp(url);
     } catch (_) {
-      return await _webViewLock.run(() => _fetchWithWebView(url));
+      return await _webViewLock.run(() => _fetchWithWebView(url)).timeout(
+        const Duration(seconds: 20), 
+        onTimeout: () => throw Exception('WebView 响应超时'),
+      );
     }
   }
 
@@ -82,9 +99,7 @@ class XPathService {
     throw UnimplementedError('请将原项目 WebView 逻辑填入此方法');
   }
 
-  // ⚠️ 修复了返回类型，适配 DetailPage 的 List<EpisodeItem>
   Future<List<EpisodeItem>> fetchEpisodes(AnimeRule rule, String detailUrl) async {
-    // 这里只是占位，如果原项目里有具体解析逻辑，请把之前代码里的内容粘进来
     return [];
   }
 
@@ -97,11 +112,12 @@ class XPathService {
     }
   }
 
-  String _cleanHtml(String html) {
-    var s = html;
-    s = s.replaceAll(RegExp(r'<!DOCTYPE[^>]*>', caseSensitive: false), '');
+  String _cleanHtml(String htmlStr) {
+    final dom = html_parser.parse(htmlStr);
+    String s = dom.outerHtml;
+    s = s.replaceAllMapped(RegExp(r'&(?!(amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)'), (match) => '&amp;');
     s = s.replaceAll(RegExp(r'<(br|hr|img|input|meta|link|area|base|col|embed|param|source|track|wbr)([^>]*?)/?>', caseSensitive: false), '<\$1\$2/>');
-    s = s.replaceAll('&nbsp;', '&#160;');
+    s = s.replaceAll(RegExp(r'<!DOCTYPE[^>]*>', caseSensitive: false), '');
     return s;
   }
 
@@ -123,7 +139,8 @@ class XPathService {
     for (final container in containers) {
       final links = findElements(container, rule.animeLinkSelector);
       for (final a in links) {
-        final title = a.innerText.trim();
+        // ⚠️ 修复：安全获取文本
+        final title = a.descendants.whereType<XmlText>().map((n) => n.value).join().trim();
         final href = a.getAttribute('href')?.trim() ?? '';
         if (title.isEmpty || href.isEmpty) continue;
         results.add(SearchResult(

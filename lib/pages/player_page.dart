@@ -11,10 +11,11 @@ import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:video_player/video_player.dart'; // 核心修复：补全这个引入
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:volume_controller/volume_controller.dart';
-import 'package:dlna_dart/dlna.dart';
+import 'package:dlna_dart/dlna.dart'; 
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import '../models/rule.dart';
 import '../services/xpath_service.dart';
@@ -63,7 +64,6 @@ class _PlayerPageState extends State<PlayerPage> {
   String? _error;
   bool _isFallbacking = false;
   
-  // 网页嗅探状态
   Set<String> _sniffedUrls = {}; 
   bool _isWebViewMode = false; 
   String? _webViewCookies; 
@@ -73,7 +73,6 @@ class _PlayerPageState extends State<PlayerPage> {
   Timer? _progressTimer;
   int _sleepMinutesRemaining = 0;
 
-  // 弹幕、OP/ED 与字幕
   List<DanmakuItem> _danmakus = [];
   final _danmakuController = TextEditingController();
   bool _showDanmakuInput = false;
@@ -86,7 +85,6 @@ class _PlayerPageState extends State<PlayerPage> {
   String? _currentSubtitleText;
   bool _subtitleEnabled = true;
 
-  // 手势控制状态
   String? _gestureTip;
   Timer? _gestureTipTimer;
   double _dragStartX = 0;
@@ -154,9 +152,7 @@ class _PlayerPageState extends State<PlayerPage> {
           }).catchError((_) {});
         }
         _fallbackManager = FallbackManager(candidates, maxRetries: 2);
-      } catch (e) {
-        debugPrint('FallbackManager init failed: $e');
-      }
+      } catch (_) {}
 
       if (_isDirectVideo(url)) {
         await _initPlayer(url);
@@ -199,7 +195,7 @@ class _PlayerPageState extends State<PlayerPage> {
       
       final prefs = await SharedPreferences.getInstance();
       final savedMs = prefs.getInt(_progressKey) ?? 0;
-      if (savedMs > 5000 && _engine.isInitialized && savedMs < _engine.controller!.value.duration.inMilliseconds - 10000) {
+      if (savedMs > 5000 && savedMs < _engine.controller!.value.duration.inMilliseconds - 10000) {
         _engine.seek(Duration(milliseconds: savedMs));
         _showTip('已为您续播至 ${_formatDuration(Duration(milliseconds: savedMs))}');
       }
@@ -221,7 +217,6 @@ class _PlayerPageState extends State<PlayerPage> {
     }
   }
 
-  // 处理底层的回退逻辑
   void _handlePlaybackError(PlaybackError error) async {
     if (!mounted || _fallbackManager == null) return;
     
@@ -264,7 +259,6 @@ class _PlayerPageState extends State<PlayerPage> {
     );
   }
 
-  // 嗅探 JS 脚本
   final String _sniffJs = """
     (function() {
         var origXhr = window.XMLHttpRequest.prototype.open;
@@ -311,106 +305,7 @@ class _PlayerPageState extends State<PlayerPage> {
     return false;
   }
 
-  Future<void> _showChangeSourceSheet() async {
-    showDialog(context: context, barrierDismissible: false, builder: (_) => const Center(child: CircularProgressIndicator()));
-    final allRules = await _storage.loadRules();
-    final otherRules = allRules.where((r) => r.id != widget.rule.id).toList();
-    
-    if (otherRules.isEmpty) {
-      if (mounted) { Navigator.pop(context); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('暂无其他可用规则'))); }
-      return;
-    }
-
-    List<SearchResult> results = [];
-    final futures = otherRules.map((rule) async {
-      try {
-        final res = await _xpath.search(rule, widget.animeTitle);
-        if (res.isNotEmpty) results.addAll(res);
-      } catch (_) {}
-    });
-    
-    await Future.wait(futures);
-    if (!mounted) return;
-    Navigator.pop(context);
-
-    if (results.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('其他源未找到该番剧')));
-      return;
-    }
-
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      builder: (ctx) => DraggableScrollableSheet(
-        expand: false, initialChildSize: 0.6, minChildSize: 0.4, maxChildSize: 0.9,
-        builder: (_, scrollController) => Column(
-          children: [
-            AppBar(
-              title: const Text('选择其他源播放'), automaticallyImplyLeading: false,
-              actions: [IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(ctx))],
-            ),
-            Expanded(
-              child: ListView.separated(
-                controller: scrollController, itemCount: results.length,
-                separatorBuilder: (_, __) => const Divider(height: 1),
-                itemBuilder: (_, i) {
-                  final r = results[i];
-                  return ListTile(
-                    title: Text(r.title), subtitle: Text(r.rule.name),
-                    trailing: const Icon(Icons.chevron_right),
-                    onTap: () {
-                      Navigator.pop(ctx);
-                      Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => DetailPage(rule: r.rule, detailUrl: r.link, title: r.title)));
-                    },
-                  );
-                },
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _loadSubtitleFile() async {
-    try {
-      FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['srt', 'vtt']);
-      if (result == null || result.files.single.path == null) return;
-      final file = File(result.files.single.path!);
-      final content = await file.readAsString(encoding: utf8);
-      final List<SubtitleItem> parsed = [];
-      final blocks = content.split(RegExp(r'\n\s*\n'));
-      for (var block in blocks) {
-        final lines = block.trim().split('\n');
-        if (lines.length >= 3) {
-          final times = lines[1].split(' --> ');
-          if (times.length == 2) {
-            final start = _parseTime(times[0]);
-            final end = _parseTime(times[1]);
-            if (start != null && end != null) parsed.add(SubtitleItem(start, end, lines.sublist(2).join('\n')));
-          }
-        }
-      }
-      setState(() { _subtitles = parsed; _subtitleEnabled = true; });
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('成功加载 ${parsed.length} 条字幕')));
-    } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('字幕加载失败: $e')));
-    }
-  }
-
-  Duration? _parseTime(String timeStr) {
-    timeStr = timeStr.replaceAll(',', '.').trim();
-    final parts = timeStr.split(':');
-    if (parts.length == 3) {
-      final h = int.tryParse(parts[0]) ?? 0;
-      final m = int.tryParse(parts[1]) ?? 0;
-      final sParts = parts[2].split('.');
-      final s = int.tryParse(sParts[0]) ?? 0;
-      final ms = sParts.length > 1 ? int.tryParse(sParts[1].padRight(3, '0').substring(0, 3)) ?? 0 : 0;
-      return Duration(hours: h, minutes: m, seconds: s, milliseconds: ms);
-    }
-    return null;
-  }
+  // ==================== 手势与交互逻辑 ====================
 
   void _onDoubleTap() { if (!_engine.isInitialized) return; if (_engine.isPlaying) { _engine.pause(); _showTip('暂停'); } else { _engine.play(); _showTip('播放'); } }
   void _onLongPressStart(LongPressStartDetails details) { if (!_engine.isInitialized) return; _engine.setPlaybackSpeed(2.0); _showTip('2x 倍速中'); }
@@ -459,7 +354,50 @@ class _PlayerPageState extends State<PlayerPage> {
       setState(() => _gestureTip = '音量 ${(newVal * 100).toInt()}%');
     }
   }
+  
   void _onVerticalDragEnd(DragEndDetails details) { _isDragging = false; _gestureTipTimer?.cancel(); setState(() => _gestureTip = null); }
+
+  // ==================== 辅助功能 ====================
+
+  Future<void> _loadSubtitleFile() async {
+    try {
+      FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['srt', 'vtt']);
+      if (result == null || result.files.single.path == null) return;
+      final file = File(result.files.single.path!);
+      final content = await file.readAsString(encoding: utf8);
+      final List<SubtitleItem> parsed = [];
+      final blocks = content.split(RegExp(r'\n\s*\n'));
+      for (var block in blocks) {
+        final lines = block.trim().split('\n');
+        if (lines.length >= 3) {
+          final times = lines[1].split(' --> ');
+          if (times.length == 2) {
+            final start = _parseTime(times[0]);
+            final end = _parseTime(times[1]);
+            if (start != null && end != null) parsed.add(SubtitleItem(start, end, lines.sublist(2).join('\n')));
+          }
+        }
+      }
+      setState(() { _subtitles = parsed; _subtitleEnabled = true; });
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('成功加载 ${parsed.length} 条字幕')));
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('字幕加载失败: $e')));
+    }
+  }
+
+  Duration? _parseTime(String timeStr) {
+    timeStr = timeStr.replaceAll(',', '.').trim();
+    final parts = timeStr.split(':');
+    if (parts.length == 3) {
+      final h = int.tryParse(parts[0]) ?? 0;
+      final m = int.tryParse(parts[1]) ?? 0;
+      final sParts = parts[2].split('.');
+      final s = int.tryParse(sParts[0]) ?? 0;
+      final ms = sParts.length > 1 ? int.tryParse(sParts[1].padRight(3, '0').substring(0, 3)) ?? 0 : 0;
+      return Duration(hours: h, minutes: m, seconds: s, milliseconds: ms);
+    }
+    return null;
+  }
 
   Future<void> _castToDevice() async {
     if (_resolvedUrl == null) return;
@@ -618,6 +556,81 @@ class _PlayerPageState extends State<PlayerPage> {
     }
   }
 
+  Future<void> _showChangeSourceSheet() async {
+    showDialog(context: context, barrierDismissible: false, builder: (_) => const Center(child: CircularProgressIndicator()));
+    final allRules = await _storage.loadRules();
+    final otherRules = allRules.where((r) => r.id != widget.rule.id).toList();
+    
+    if (otherRules.isEmpty) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('暂无其他可用规则')));
+      }
+      return;
+    }
+
+    List<SearchResult> results = [];
+    final futures = otherRules.map((rule) async {
+      try {
+        final res = await _xpath.search(rule, widget.animeTitle);
+        if (res.isNotEmpty) results.addAll(res);
+      } catch (_) {}
+    });
+    
+    await Future.wait(futures);
+    if (!mounted) return;
+    Navigator.pop(context);
+
+    if (results.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('其他源未找到该番剧')));
+      return;
+    }
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.6,
+        minChildSize: 0.4,
+        maxChildSize: 0.9,
+        builder: (_, scrollController) => Column(
+          children: [
+            AppBar(
+              title: const Text('选择其他源播放'),
+              automaticallyImplyLeading: false,
+              actions: [IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(ctx))],
+            ),
+            Expanded(
+              child: ListView.separated(
+                controller: scrollController,
+                itemCount: results.length,
+                separatorBuilder: (_, __) => const Divider(height: 1),
+                itemBuilder: (_, i) {
+                  final r = results[i];
+                  return ListTile(
+                    title: Text(r.title),
+                    subtitle: Text(r.rule.name),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      Navigator.pushReplacement(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => DetailPage(rule: r.rule, detailUrl: r.link, title: r.title),
+                        ),
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   bool _isDirectVideo(String url) {
     try {
       final path = Uri.parse(url).path.toLowerCase();
@@ -647,11 +660,16 @@ class _PlayerPageState extends State<PlayerPage> {
 
   @override
   void dispose() {
-    _sleepTimer?.cancel(); _gestureTipTimer?.cancel(); _progressTimer?.cancel(); _danmakuController.dispose();
+    _sleepTimer?.cancel(); 
+    _gestureTipTimer?.cancel(); 
+    _progressTimer?.cancel(); 
+    _danmakuController.dispose();
+    
     if (_engine.isInitialized) {
        SharedPreferences.getInstance().then((prefs) => prefs.setInt(_progressKey, _engine.controller!.value.position.inMilliseconds));
     }
-    _engine.dispose();
+    _engine.dispose(); 
+    
     ScreenBrightness().resetScreenBrightness();
     super.dispose();
   }
@@ -801,6 +819,7 @@ class _PlayerPageState extends State<PlayerPage> {
   }
 
   Widget _buildVideoPlayer() {
+    final controller = _engine.controller!;
     return RepaintBoundary(
       key: _globalKey,
       child: GestureDetector(
@@ -817,13 +836,16 @@ class _PlayerPageState extends State<PlayerPage> {
         child: Stack(
           alignment: Alignment.center,
           children: [
-            AspectRatio(aspectRatio: _engine.controller!.value.aspectRatio, child: VideoPlayer(_engine.controller!)),
+            AspectRatio(
+              aspectRatio: controller.value.aspectRatio, 
+              child: VideoPlayer(controller), // 核心修复：使用正确的 controller
+            ),
             if (_subtitleEnabled && _currentSubtitleText != null && _currentSubtitleText!.isNotEmpty)
               Positioned(bottom: 80, left: 20, right: 20, child: Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6), decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(4)), child: Text(_currentSubtitleText!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold, shadows: [Shadow(color: Colors.black, blurRadius: 2, offset: Offset(1, 1))])))),
             if (_showSkipOpBtn && _opEndTime != null)
-              Positioned(right: 16, bottom: 120, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.black54, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20))), onPressed: () { _engine.seek(_opEndTime!); setState(() => _showSkipOpBtn = false); }, child: Text('跳过片头 ${_formatDuration(_opEndTime! - _engine.controller!.value.position)}'))),
+              Positioned(right: 16, bottom: 120, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.black54, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20))), onPressed: () { _engine.seek(_opEndTime!); setState(() => _showSkipOpBtn = false); }, child: Text('跳过片头 ${_formatDuration(_opEndTime! - controller.value.position)}'))),
             if (_danmakuEnabled)
-              DanmakuOverlay(currentPosition: _engine.controller!.value.position, danmakus: _danmakus, isPlaying: _engine.isPlaying, blockWords: _blockWords, opacity: _danmakuOpacity),
+              DanmakuOverlay(currentPosition: controller.value.position, danmakus: _danmakus, isPlaying: controller.value.isPlaying, blockWords: _blockWords, opacity: _danmakuOpacity),
             if (_gestureTip != null)
               Container(padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12), decoration: BoxDecoration(color: Colors.black.withOpacity(0.7), borderRadius: BorderRadius.circular(8)), child: Text(_gestureTip!, style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold))),
             Positioned(
@@ -834,14 +856,18 @@ class _PlayerPageState extends State<PlayerPage> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    if (_engine.controller!.value.duration.inSeconds > 0) DanmakuHeatmap(danmakus: _danmakus, totalDuration: _engine.controller!.value.duration, currentPosition: _engine.controller!.value.position),
+                    if (controller.value.duration.inSeconds > 0) DanmakuHeatmap(danmakus: _danmakus, totalDuration: controller.value.duration, currentPosition: controller.value.position),
                     if (_showDanmakuInput)
                       Row(children: [Expanded(child: TextField(controller: _danmakuController, autofocus: true, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(hintText: '发一条友善的弹幕...', hintStyle: TextStyle(color: Colors.white54), filled: true, fillColor: Colors.white12, border: OutlineInputBorder(borderSide: BorderSide.none), contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8)), onSubmitted: (_) => _sendDanmaku())), IconButton(icon: const Icon(Icons.send, color: Colors.deepPurpleAccent), onPressed: _sendDanmaku)]),
-                    VideoProgressIndicator(_engine.controller!, allowScrubbing: true, colors: const VideoProgressColors(playedColor: Colors.deepPurpleAccent)),
+                    VideoProgressIndicator(
+                      controller, 
+                      allowScrubbing: true, 
+                      colors: const VideoProgressColors(playedColor: Colors.deepPurpleAccent), // 去掉了之前的编译错误
+                    ),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Row(children: [IconButton(icon: Icon(_engine.isPlaying ? Icons.pause : Icons.play_arrow, color: Colors.white), onPressed: () { setState(() { _engine.isPlaying ? _engine.pause() : _engine.play(); }); }), IconButton(icon: const Icon(Icons.chat_bubble_outline, color: Colors.white), onPressed: () { setState(() => _showDanmakuInput = !_showDanmakuInput); }), Text('${_formatDuration(_engine.controller!.value.position)} / ${_formatDuration(_engine.controller!.value.duration)}', style: const TextStyle(color: Colors.white, fontSize: 12))]),
+                        Row(children: [IconButton(icon: Icon(controller.value.isPlaying ? Icons.pause : Icons.play_arrow, color: Colors.white), onPressed: () { setState(() { controller.value.isPlaying ? _engine.pause() : _engine.play(); }); }), IconButton(icon: const Icon(Icons.chat_bubble_outline, color: Colors.white), onPressed: () { setState(() => _showDanmakuInput = !_showDanmakuInput); }), Text('${_formatDuration(controller.value.position)} / ${_formatDuration(controller.value.duration)}', style: const TextStyle(color: Colors.white, fontSize: 12))]),
                         Row(children: [0.5, 1.0, 1.5, 2.0].map((speed) { return GestureDetector(onTap: () => _setSpeed(speed), child: Container(margin: const EdgeInsets.symmetric(horizontal: 4), padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), decoration: BoxDecoration(color: _playbackSpeed == speed ? Colors.deepPurple : Colors.white24, borderRadius: BorderRadius.circular(4)), child: Text('${speed}x', style: const TextStyle(color: Colors.white, fontSize: 12)))); }).toList()),
                       ],
                     ),

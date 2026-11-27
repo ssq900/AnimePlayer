@@ -13,7 +13,6 @@ class PlaybackError {
 class PlaybackEngine {
   VideoPlayerController? _controller;
   final _errorController = StreamController<PlaybackError>.broadcast();
-  
   Stream<PlaybackError> get errorStream => _errorController.stream;
 
   Duration? _pendingSeek;
@@ -26,7 +25,9 @@ class PlaybackEngine {
   Future<void> open(String url, {Map<String, String>? headers}) async {
     await dispose();
 
-    _controller = VideoPlayerController.networkUrl(Uri.parse(url), httpHeaders: headers);
+    // 核心修复：如果 headers 为空，给一个空 Map 防止类型错误
+    final safeHeaders = headers ?? <String, String>{};
+    _controller = VideoPlayerController.networkUrl(Uri.parse(url), httpHeaders: safeHeaders);
     
     _controller!.addListener(_onPlayerValueChanged);
     
@@ -40,28 +41,25 @@ class PlaybackEngine {
   }
 
   void _onPlayerValueChanged() {
-    if (_controller!.value.hasError) {
+    if (_controller?.value.hasError == true) {
       final err = _controller!.value.errorDescription ?? '未知播放错误';
       _errorController.add(PlaybackError(PlaybackErrorType.network, err));
     }
   }
 
-  // 核心实现：串行化 Seek 队列 (Single-flight)
   Future<void> seek(Duration position) async {
     if (_controller == null || !isInitialized) return;
     _pendingSeek = position;
-    
-    if (_isSeeking) return; // 如果正在 seek，只更新目标位置，等当前完成会自动接管
+    if (_isSeeking) return;
     
     _isSeeking = true;
     while (_pendingSeek != null) {
       final target = _pendingSeek!;
       _pendingSeek = null;
-      
       try {
         await _controller!.seekTo(target).timeout(const Duration(seconds: 3));
       } catch (e) {
-        _errorController.add(PlaybackError(PlaybackErrorType.unknown, 'Seek timeout or failed: $e'));
+        _errorController.add(PlaybackError(PlaybackErrorType.unknown, 'Seek failed: $e'));
         break;
       }
     }
@@ -71,7 +69,7 @@ class PlaybackEngine {
   void play() => _controller?.play();
   void pause() => _controller?.pause();
   void setPlaybackSpeed(double speed) => _controller?.setPlaybackSpeed(speed);
-
+  
   Future<void> dispose() async {
     _pendingSeek = null;
     _isSeeking = false;

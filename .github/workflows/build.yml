@@ -86,10 +86,16 @@ jobs:
           echo "android.newDsl=false" >> android/gradle.properties
           echo "android.builtInKotlin=false" >> android/gradle.properties
 
+      - name: Inject Core Library Desugaring for flutter_local_notifications
+        run: |
+          # 修改 app/build.gradle.kts，注入脱糖配置
+          sed -i 's/compileOptions {/compileOptions {\n        isCoreLibraryDesugaringEnabled = true\n        sourceCompatibility = JavaVersion.VERSION_17\n        targetCompatibility = JavaVersion.VERSION_17/' android/app/build.gradle.kts
+          sed -i 's/dependencies {/dependencies {\n    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")/' android/app/build.gradle.kts
+
       - name: Flutter pub get
         run: flutter pub get
 
-      # 🔥 核心新增：修复 flutter_inappwebview 插件的 ProGuard 配置兼容问题
+      # 🔥 修复 flutter_inappwebview 插件的 ProGuard 配置兼容问题
       - name: Fix flutter_inappwebview ProGuard Compatibility
         run: |
           find ~/.pub-cache/hosted/pub.dev -path "*flutter_inappwebview*" -name "build.gradle" -type f | while read -r file; do

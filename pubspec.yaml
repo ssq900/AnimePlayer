@@ -16,10 +16,13 @@ dependencies:
   http: ^1.2.0
   xml: ^6.5.0
   xpath_selector: ^3.0.2
-  xpath_selector_xml_parser: ^3.0.0  # 适配 3.0.2 版本必须的解析器
+  xpath_selector_xml_parser: ^3.0.0
+  
+  # === 播放器及原项目依赖 ===
   video_player: ^2.9.1
-
-  # 如果你的原项目有其他依赖（如 webview_flutter），请在这里加回来
+  shared_preferences: ^2.2.2
+  path_provider: ^2.1.2
+  webdav_client: ^1.2.2
 
 dev_dependencies:
   flutter_test:

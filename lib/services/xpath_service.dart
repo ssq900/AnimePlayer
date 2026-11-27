@@ -35,6 +35,15 @@ class XPathService {
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
   };
 
+  /// 兼容原项目 DebuggerPage/SettingsPage 的公开抓取接口
+  Future<String> fetchHtml(String url) async {
+    try {
+      return await _fetchHttp(url);
+    } catch (_) {
+      return await _webViewLock.run(() => _fetchWithWebView(url));
+    }
+  }
+
   /// 统一搜索入口：先 HTTP，网络层失败降级 WebView（WebView 阶段串行）
   Future<List<SearchResult>> search(AnimeRule rule, String keyword) async {
     final url = buildSearchUrl(rule.baseUrl, keyword);
@@ -88,7 +97,6 @@ class XPathService {
   List<XmlElement> findElements(XmlNode context, String expr) {
     if (expr.trim().isEmpty) return const [];
     try {
-      // 使用 3.x 版本的正确 API
       final result = XPath.xmlElement(context).query(expr);
       return result.nodes.whereType<XmlElement>().toList();
     } catch (e) {

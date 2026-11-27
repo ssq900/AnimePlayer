@@ -29,16 +29,13 @@ jobs:
 
       - name: Recreate Android Folder & Inject Mirrors
         run: |
-          # 1. 备份配置 (如果存在)
           if [ -f android/app/src/main/AndroidManifest.xml ]; then
             cp android/app/src/main/AndroidManifest.xml AndroidManifest_backup.xml
           fi
           
-          # 2. 彻底重建 Android 目录
           rm -rf android
           flutter create --platforms=android .
           
-          # 3. 还原 Manifest (或者注入网络权限)
           if [ -f AndroidManifest_backup.xml ]; then
             cp AndroidManifest_backup.xml android/app/src/main/AndroidManifest.xml
           else
@@ -47,7 +44,6 @@ jobs:
           fi
           rm -f AndroidManifest_backup.xml
 
-          # 4. 核心修复：注入 settings.gradle.kts 镜像及合适版本的 AGP/Kotlin
           cat << 'EOF' > android/settings.gradle.kts
           pluginManagement {
               val flutterSdkPath = run {
@@ -79,23 +75,49 @@ jobs:
           include(":app")
           EOF
 
-          # 5. 更新 Gradle Wrapper 版本
           sed -i 's/distributionUrl=.*/distributionUrl=https\\:\/\/services.gradle.org\/distributions\/gradle-9.3.1-bin.zip/' android/gradle/wrapper/gradle-wrapper.properties
 
-          # 6. 关闭 AGP 9 的临时开关，避免与部分旧版插件冲突
           echo "android.newDsl=false" >> android/gradle.properties
           echo "android.builtInKotlin=false" >> android/gradle.properties
 
-      - name: Inject Core Library Desugaring for flutter_local_notifications
+      # 🔥 核心修复：使用 python 脚本安全、精准地注入脱糖配置
+      - name: Inject Core Library Desugaring (Python)
         run: |
-          # 使用完整的 Kotlin DSL 配置语句注入依赖与编译选项
-          sed -i 's/compileOptions {/compileOptions {\n        isCoreLibraryDesugaringEnabled = true\n        sourceCompatibility = JavaVersion.VERSION_17\n        targetCompatibility = JavaVersion.VERSION_17/' android/app/build.gradle.kts
-          sed -i 's/dependencies {/dependencies {\n    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")/' android/app/build.gradle.kts
+          python3 - << 'PYEOF'
+          import re
+          
+          path = 'android/app/build.gradle.kts'
+          with open(path, 'r') as f:
+              content = f.read()
+
+          # 1. 注入 compileOptions
+          if 'isCoreLibraryDesugaringEnabled' not in content:
+              compile_options = """
+              compileOptions {
+                  isCoreLibraryDesugaringEnabled = true
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              """
+              content = re.sub(r'android\s*\{', 'android {\n' + compile_options, content, count=1)
+
+          # 2. 注入 dependencies
+          if 'desugar_jdk_libs' not in content:
+              desugar_dep = """
+              dependencies {
+                  coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+              }
+              """
+              content += '\n' + desugar_dep
+
+          with open(path, 'w') as f:
+              f.write(content)
+          print("✅ build.gradle.kts 脱糖配置注入完成")
+          PYEOF
 
       - name: Flutter pub get
         run: flutter pub get
 
-      # 修复 flutter_inappwebview 插件的 ProGuard 配置兼容问题
       - name: Fix flutter_inappwebview ProGuard Compatibility
         run: |
           find ~/.pub-cache/hosted/pub.dev -path "*flutter_inappwebview*" -name "build.gradle" -type f | while read -r file; do

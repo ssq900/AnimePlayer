@@ -5,6 +5,7 @@ import 'package:xml/xml.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'package:gbk_codec/gbk_codec.dart';
 import '../models/rule.dart';
+import 'webview_engine.dart'; // 引入刚才新建的引擎
 
 class XPathParseException implements Exception {
   final String message;
@@ -13,23 +14,12 @@ class XPathParseException implements Exception {
   String toString() => 'XPathParseException: $message';
 }
 
-class _SerialLock {
-  Future<void> _chain = Future.value();
-  Future<T> run<T>(Future<T> Function() task) {
-    final completer = Completer<T>();
-    _chain = _chain.then((_) async {
-      try {
-        completer.complete(await task());
-      } catch (e, st) {
-        completer.completeError(e, st);
-      }
-    });
-    return completer.future;
-  }
-}
-
 class XPathService {
-  final _webViewLock = _SerialLock();
+  final WebViewEngine _webViewEngine;
+
+  // 构造函数注入引擎，方便以后换别的实现
+  XPathService({WebViewEngine? webViewEngine})
+      : _webViewEngine = webViewEngine ?? InAppWebViewEngine();
 
   static const _httpHeaders = {
     'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
@@ -43,10 +33,8 @@ class XPathService {
     try {
       html = await _fetchHttp(url);
     } catch (_) {
-      html = await _webViewLock.run(() => _fetchWithWebView(url)).timeout(
-        const Duration(seconds: 20), 
-        onTimeout: () => throw Exception('WebView 响应超时'),
-      );
+      // 降级使用 WebView 引擎
+      html = await _webViewEngine.fetchHtml(url);
     }
     return parseSearchPage(html, rule);
   }
@@ -54,9 +42,6 @@ class XPathService {
   void _validateRule(AnimeRule rule) {
     if (rule.searchSelector.trim().isEmpty || rule.animeLinkSelector.trim().isEmpty) {
       throw XPathParseException('规则解析失败：选择器为空');
-    }
-    if (rule.searchSelector.contains('<') || rule.animeLinkSelector.contains('<')) {
-      throw XPathParseException('规则包含非法 HTML 字符');
     }
   }
 
@@ -72,10 +57,7 @@ class XPathService {
     try {
       return await _fetchHttp(url);
     } catch (_) {
-      return await _webViewLock.run(() => _fetchWithWebView(url)).timeout(
-        const Duration(seconds: 20), 
-        onTimeout: () => throw Exception('WebView 响应超时'),
-      );
+      return await _webViewEngine.fetchHtml(url);
     }
   }
 
@@ -93,14 +75,6 @@ class XPathService {
     } catch (_) {
       try { return gbk.decode(resp.bodyBytes); } catch (_) { return resp.body; }
     }
-  }
-
-  Future<String> _fetchWithWebView(String url) async {
-    throw UnimplementedError('请将原项目 WebView 逻辑填入此方法');
-  }
-
-  Future<List<EpisodeItem>> fetchEpisodes(AnimeRule rule, String detailUrl) async {
-    return [];
   }
 
   XmlDocument parseHtml(String html) {
@@ -139,7 +113,6 @@ class XPathService {
     for (final container in containers) {
       final links = findElements(container, rule.animeLinkSelector);
       for (final a in links) {
-        // ⚠️ 修复：安全获取文本
         final title = a.descendants.whereType<XmlText>().map((n) => n.value).join().trim();
         final href = a.getAttribute('href')?.trim() ?? '';
         if (title.isEmpty || href.isEmpty) continue;

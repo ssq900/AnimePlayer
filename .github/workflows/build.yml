@@ -80,7 +80,6 @@ jobs:
           echo "android.newDsl=false" >> android/gradle.properties
           echo "android.builtInKotlin=false" >> android/gradle.properties
 
-      # 🔥 核心修复：使用 python 脚本安全、精准地注入脱糖配置
       - name: Inject Core Library Desugaring (Python)
         run: |
           python3 - << 'PYEOF'
@@ -90,7 +89,6 @@ jobs:
           with open(path, 'r') as f:
               content = f.read()
 
-          # 1. 注入 compileOptions
           if 'isCoreLibraryDesugaringEnabled' not in content:
               compile_options = """
               compileOptions {
@@ -101,7 +99,6 @@ jobs:
               """
               content = re.sub(r'android\s*\{', 'android {\n' + compile_options, content, count=1)
 
-          # 2. 注入 dependencies
           if 'desugar_jdk_libs' not in content:
               desugar_dep = """
               dependencies {
@@ -114,6 +111,12 @@ jobs:
               f.write(content)
           print("✅ build.gradle.kts 脱糖配置注入完成")
           PYEOF
+
+      # 🔥 核心新增：将 compileSdk 提升至 36，满足 flutter_plugin_android_lifecycle 的要求
+      - name: Upgrade compileSdk to 36
+        run: |
+          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 36/' android/app/build.gradle.kts
+          echo "✅ compileSdk 已升级至 36"
 
       - name: Flutter pub get
         run: flutter pub get

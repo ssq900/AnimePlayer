@@ -10,7 +10,7 @@ class StorageService {
   static const _historyFileName = 'anime_history.json';
   static const _scheduleFileName = 'anime_schedule.json';
 
-  // 细粒度锁：防止不同的文件操作互相阻塞，但保证同一文件操作原子性
+  // 细粒度锁：防止不同的文件操作互相阻塞，但保证同一文件的并发安全
   static final _rulesLock = Lock();
   static final _historyLock = Lock();
   static final _scheduleLock = Lock();
@@ -20,23 +20,21 @@ class StorageService {
     return File('${dir.path}/$name');
   }
 
-  // 核心机制：原子写入（写入临时文件 -> 重命名）
+  // 核心机制：原子写入（写入临时文件 -> 重命名），防止断电导致数据损坏
   Future<void> _atomicWrite(File targetFile, String content) async {
     final tempFile = File('${targetFile.path}.tmp');
     await tempFile.writeAsString(content, flush: true);
     await tempFile.rename(targetFile.path);
   }
 
-  // 【新增】初始化并清理残留的临时文件
+  // 初始化清理：清理上次异常退出残留的 .tmp 文件
   Future<void> init() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
       final files = dir.listSync();
       for (var file in files) {
         if (file.path.endsWith('.tmp')) {
-          try {
-            await file.delete();
-          } catch (_) {}
+          try { await file.delete(); } catch (_) {}
         }
       }
     } catch (e) {
@@ -123,6 +121,43 @@ class StorageService {
     });
   }
 
+  // 核心新增：记录源的成功与失败，用于计算信任分
+  Future<void> updateRuleStats(String ruleId, {required bool success}) async {
+    await _rulesLock.synchronized(() async {
+      try {
+        final file = await _getFile(_rulesFileName);
+        if (!await file.exists()) return;
+        
+        final raw = await file.readAsString();
+        if (raw.trim().isEmpty) return;
+        
+        final List<AnimeRule> rules = (jsonDecode(raw) as List)
+            .map((e) => AnimeRule.fromJson(e as Map<String, dynamic>))
+            .toList();
+            
+        final idx = rules.indexWhere((r) => r.id == ruleId);
+        if (idx >= 0) {
+          final old = rules[idx];
+          // 使用不可变更新，重建对象
+          rules[idx] = AnimeRule(
+            id: old.id, 
+            name: old.name, 
+            baseUrl: old.baseUrl,
+            searchSelector: old.searchSelector, 
+            animeLinkSelector: old.animeLinkSelector,
+            episodeListSelector: old.episodeListSelector, 
+            episodeLinkSelector: old.episodeLinkSelector,
+            successCount: success ? old.successCount + 1 : old.successCount,
+            failCount: success ? old.failCount : old.failCount + 1,
+          );
+          await _atomicWrite(file, jsonEncode(rules.map((r) => r.toJson()).toList()));
+        }
+      } catch (e) {
+        debugPrint('[StorageError] 更新规则统计失败: $e');
+      }
+    });
+  }
+
   // ==================== 历史记录存储 ====================
   Future<List<HistoryItem>> loadHistory() async {
     return await _historyLock.synchronized(() async {
@@ -160,20 +195,6 @@ class StorageService {
         return true;
       } catch (e) {
         debugPrint('[StorageError] 保存历史失败: $e');
-        return false;
-      }
-    });
-  }
-
-  // 【新增】全量保存历史（供 SyncService 恢复云端数据使用）
-  Future<bool> saveHistory(List<HistoryItem> history) async {
-    return await _historyLock.synchronized(() async {
-      try {
-        final file = await _getFile(_historyFileName);
-        await _atomicWrite(file, jsonEncode(history.map((h) => h.toJson()).toList()));
-        return true;
-      } catch (e) {
-        debugPrint('[StorageError] 全量保存历史失败: $e');
         return false;
       }
     });

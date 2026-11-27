@@ -1,142 +1,71 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../features/search/search_provider.dart';
 import '../models/rule.dart';
 import '../services/xpath_service.dart';
-import 'detail_page.dart';
 
-class SearchPage extends StatefulWidget {
+class SearchPage extends ConsumerStatefulWidget {
   final List<AnimeRule> rules;
   const SearchPage({super.key, required this.rules});
 
   @override
-  State<SearchPage> createState() => _SearchPageState();
+  ConsumerState<SearchPage> createState() => _SearchPageState();
 }
 
-class _SearchPageState extends State<SearchPage> {
+class _SearchPageState extends ConsumerState<SearchPage> {
   final _controller = TextEditingController();
-  final _service = XPathService();
-  
-  List<SearchResult> _results = [];
-  bool _searching = false;
-  int _completedCount = 0;
-  String? _currentSearchKeyword;
 
-  Future<void> _search() async {
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _onSearch() {
     final keyword = _controller.text.trim();
     if (keyword.isEmpty) return;
-    
-    setState(() {
-      _searching = true;
-      _results = [];
-      _completedCount = 0;
-      _currentSearchKeyword = keyword;
-    });
-
-    // 串行搜索每一个源，防止 WebView 并发过多导致内存溢出闪退
-    for (final rule in widget.rules) {
-      if (!mounted || _currentSearchKeyword != keyword) break; // 如果用户中途发起了新搜索，中断旧搜索
-      
-      try {
-        final res = await _service.search(rule, keyword);
-        if (res.isNotEmpty && mounted && _currentSearchKeyword == keyword) {
-          setState(() {
-            _results.addAll(res);
-          });
-        }
-      } catch (e) {
-        // 忽略单个源的报错，继续搜下一个
-        debugPrint("源 ${rule.name} 搜索失败: $e");
-      } finally {
-        if (mounted) {
-          setState(() {
-            _completedCount++;
-          });
-        }
-      }
-    }
-
-    if (mounted) setState(() => _searching = false);
+    ref.read(searchProvider.notifier).search(keyword, widget.rules);
   }
 
   @override
   Widget build(BuildContext context) {
+    final state = ref.watch(searchProvider);
+
     return Scaffold(
       appBar: AppBar(
-        title: Text('聚合搜索 (${_completedCount}/${widget.rules.length})'),
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(64),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-            child: TextField(
-              controller: _controller,
-              textInputAction: TextInputAction.search,
-              onSubmitted: (_) => _search(),
-              decoration: InputDecoration(
-                hintText: '输入番剧名称（将搜索所有源）',
-                suffixIcon: IconButton(
-                  icon: const Icon(Icons.search),
-                  onPressed: _search,
-                ),
-                filled: true,
-              ),
-            ),
+        title: TextField(
+          controller: _controller,
+          decoration: const InputDecoration(
+            hintText: '输入番剧名称...',
+            border: InputBorder.none,
           ),
+          onSubmitted: (_) => _onSearch(),
         ),
+        actions: [
+          IconButton(icon: const Icon(Icons.search), onPressed: _onSearch),
+        ],
       ),
-      body: _searching && _results.isEmpty
-          ? const Center(child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                CircularProgressIndicator(),
-                SizedBox(height: 16),
-                Text('正在多源聚合搜索中，请稍候...'),
-              ],
-            ))
-          : _results.isEmpty && !_searching
-              ? const Center(child: Text('没有搜到相关结果，请尝试更换关键词'))
-              : ListView.separated(
-                  itemCount: _results.length,
-                  separatorBuilder: (_, __) => const Divider(height: 1),
-                  itemBuilder: (_, i) {
-                    final r = _results[i];
-                    return ListTile(
-                      title: Text(r.title),
-                      subtitle: Row(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                            decoration: BoxDecoration(
-                              color: Colors.deepPurple.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                            child: Text(r.rule.name, style: const TextStyle(fontSize: 12, color: Colors.deepPurple)),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              r.link,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(color: Colors.grey[600], fontSize: 12),
-                            ),
-                          ),
-                        ],
-                      ),
-                      trailing: const Icon(Icons.chevron_right),
-                      onTap: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => DetailPage(
-                              rule: r.rule, // 精准传递这条结果对应的规则
-                              detailUrl: r.link,
-                              title: r.title,
-                            ),
-                          ),
-                        );
-                      },
-                    );
-                  },
-                ),
+      body: state.when(
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (err, _) => SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Text('搜索失败:\n$err', style: const TextStyle(color: Colors.red)),
+        ),
+        data: (results) {
+          if (results.isEmpty) return const Center(child: Text('暂无结果'));
+          return ListView.builder(
+            itemCount: results.length,
+            itemBuilder: (context, i) {
+              final r = results[i];
+              return ListTile(
+                title: Text(r.title),
+                subtitle: Text(r.sourceName),
+                onTap: () {},
+              );
+            },
+          );
+        },
+      ),
     );
   }
 }

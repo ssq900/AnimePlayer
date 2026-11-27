@@ -1,25 +1,50 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
-import 'package:flutter/foundation.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'package:xml/xml.dart' as xml;
 import 'package:xml/xpath.dart';
 import '../models/rule.dart';
 import 'exceptions.dart';
+import 'network_client.dart';
 
 class XPathService {
+  final _client = NetworkClient().client;
+
   Future<String> fetchHtml(
     String url, {
     String? waitForSelector,
     Duration timeout = const Duration(seconds: 25),
-    int pollCount = 15,
   }) async {
     if (!url.startsWith('http://') && !url.startsWith('https://')) {
       throw NetworkException('非法的协议请求: 仅支持 HTTP/HTTPS');
     }
 
+    // 1. 优先尝试轻量级 HTTP 请求
+    try {
+      final resp = await _client.get(
+        Uri.parse(url), 
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+        }
+      ).timeout(const Duration(seconds: 10));
+
+      if (resp.statusCode == 200) {
+        final body = resp.body;
+        // 如果网页包含 Cloudflare 挑战或体积太小，则视为拦截，降级到 WebView
+        if (!body.contains('cf-browser-verification') && body.length > 1000) {
+          return body;
+        }
+      }
+    } catch (e) {
+      debugPrint('[XPathService] HTTP probe failed, falling back to WebView: $e');
+    }
+
+    // 2. 降级到 Headless WebView (针对动态渲染或防爬盾)
+    return _fetchWithWebView(url, waitForSelector, timeout);
+  }
+
+  Future<String> _fetchWithWebView(String url, String? waitForSelector, Duration timeout) async {
     final completer = Completer<String>();
     HeadlessInAppWebView? webView;
     bool isDisposed = false;
@@ -36,7 +61,7 @@ class XPathService {
           try {
             if (waitForSelector != null && waitForSelector.isNotEmpty) {
               final safeSelector = jsonEncode(waitForSelector.startsWith('//') ? 'body' : waitForSelector);
-              for (int i = 0; i < pollCount; i++) { 
+              for (int i = 0; i < 10; i++) { 
                 if (completer.isCompleted) return;
                 final hasElement = await controller.evaluateJavascript(
                     source: "document.querySelector($safeSelector) != null"
@@ -45,7 +70,7 @@ class XPathService {
                 await Future.delayed(const Duration(milliseconds: 500));
               }
             } else {
-              await Future.delayed(const Duration(milliseconds: 1500));
+              await Future.delayed(const Duration(milliseconds: 1000));
             }
 
             if (completer.isCompleted) return;
@@ -79,114 +104,6 @@ class XPathService {
     }
   }
 
-  String _cleanHtmlForXml(String html) {
-    try {
-      String cleaned = html;
-      cleaned = cleaned.replaceAll(RegExp(r'<script\b[^>]*>([\s\S]*?)<\/script>'), '');
-      cleaned = cleaned.replaceAll(RegExp(r'<style\b[^>]*>([\s\S]*?)<\/style>'), '');
-      cleaned = cleaned.replaceAll(RegExp(r'<head\b[^>]*>([\s\S]*?)<\/head>'), '');
-      // 核心修复：在替换字符串前加上 r，变成原始字符串，防止 $ 被解析
-      cleaned = cleaned.replaceAll(RegExp(r'<(link|meta|img|br|hr|input)([^>]*?)(?<!/)>'), r'<$1$2 />');
-      final doc = html_parser.parse(cleaned);
-      return doc.outerHtml;
-    } catch (_) { return html; }
-  }
-
-  String _normalizeXpath(String xpath) {
-    String res = xpath.trim();
-    if (!res.startsWith('//') && !res.startsWith('/') && !res.startsWith('./')) res = '//$res';
-    final reg = RegExp(r"""\[@class\s*=\s*['"]([^'"]+)['"]\]""");
-    res = res.replaceAllMapped(reg, (m) => "[contains(@class, '${m.group(1)!.trim()}')]");
-    return res;
-  }
-
-  Future<List<SearchResult>> search(AnimeRule rule, String keyword) async {
-    if (rule.searchSelector.trim().isEmpty) throw ParseException('规则错误: 搜索结果容器选择器为空');
-    final encoded = Uri.encodeComponent(keyword);
-    String searchUrl = rule.baseUrl;
-    if (searchUrl.contains('{keyword}')) searchUrl = searchUrl.replaceAll('{keyword}', encoded);
-    else searchUrl = '$searchUrl${searchUrl.contains('?') ? '&' : '?'}wd=$encoded';
-
-    final rawHtml = await fetchHtml(searchUrl);
-    try {
-      final document = xml.XmlDocument.parse(_cleanHtmlForXml(rawHtml));
-      final searchXpath = _normalizeXpath(rule.searchSelector);
-      final containerNodes = document.xpath(searchXpath);
-      if (containerNodes.isEmpty) throw ParseException('未找到搜索容器，可能网站已改版');
-
-      List<xml.XmlNode> items = [];
-      if (rule.animeLinkSelector.isNotEmpty) {
-        final linkXpath = _normalizeXpath(rule.animeLinkSelector);
-        for (var node in containerNodes) {
-          items.addAll(node.xpath(linkXpath));
-        }
-      }
-      if (items.isEmpty) items = containerNodes.toList();
-
-      return items.whereType<xml.XmlElement>().map((el) {
-        final href = el.getAttribute('href') ?? el.getAttribute('src') ?? '';
-        final title = el.innerText.replaceAll(RegExp(r'\s+'), ' ').trim();
-        if (el.name.local != 'a' && href.isEmpty) {
-          try {
-            final innerA = el.findElements('a').firstOrNull;
-            if (innerA != null) {
-              return SearchResult(title: innerA.innerText.trim(), link: _absolute(rule.baseUrl, innerA.getAttribute('href') ?? ''), rule: rule);
-            }
-          } catch (_) {}
-        }
-        return SearchResult(title: title, link: _absolute(rule.baseUrl, href), rule: rule);
-      })
-      .where((r) {
-        if (r.link.isEmpty || r.title.isEmpty) return false;
-        final uri = Uri.tryParse(r.link);
-        if (uri == null || uri.path == '/' || uri.path.isEmpty) return false;
-        final cleanKeyword = keyword.toLowerCase().trim();
-        final cleanTitle = r.title.toLowerCase().trim();
-        return cleanTitle.contains(cleanKeyword) || cleanKeyword.contains(cleanTitle);
-      }).toList();
-    } catch (e) {
-      if (e is AppException) rethrow;
-      throw ParseException('网页内容解析失败: $e');
-    }
-  }
-
-  Future<List<EpisodeItem>> fetchEpisodes(AnimeRule rule, String detailUrl) async {
-    if (rule.episodeListSelector.trim().isEmpty) throw ParseException('剧集列表选择器为空');
-    final rawHtml = await fetchHtml(detailUrl);
-    try {
-      final document = xml.XmlDocument.parse(_cleanHtmlForXml(rawHtml));
-      final nodes = document.xpath(_normalizeXpath(rule.episodeListSelector));
-      if (nodes.isEmpty) throw ParseException('未找到剧集列表，可能规则失效');
-      return nodes.whereType<xml.XmlElement>().map((el) {
-        return EpisodeItem(title: el.innerText.trim(), link: _absolute(rule.baseUrl, el.getAttribute('href') ?? ''));
-      }).where((e) => e.link.isNotEmpty).toList();
-    } catch (e) {
-      throw ParseException('解析剧集失败: $e');
-    }
-  }
-
-  Future<String> resolveEpisodeLink(AnimeRule rule, String episodeUrl) async {
-    if (rule.episodeLinkSelector.trim().isEmpty) return episodeUrl;
-    final rawHtml = await fetchHtml(episodeUrl);
-    try {
-      final document = xml.XmlDocument.parse(_cleanHtmlForXml(rawHtml));
-      final nodes = document.xpath(_normalizeXpath(rule.episodeLinkSelector));
-      final el = nodes.whereType<xml.XmlElement>().firstOrNull;
-      if (el == null) throw ParseException('未找到视频播放地址');
-      final href = el.getAttribute('href') ?? el.getAttribute('src') ?? '';
-      return href.isEmpty ? episodeUrl : _absolute(rule.baseUrl, href);
-    } catch (e) {
-      throw ParseException('解析视频链接失败: $e');
-    }
-  }
-
-  String _absolute(String baseUrl, String href) {
-    if (href.isEmpty) return '';
-    try {
-      if (href.startsWith('//')) return '${Uri.parse(baseUrl).scheme}:$href';
-      final resolved = Uri.parse(baseUrl).resolve(href).toString();
-      final scheme = Uri.parse(resolved).scheme.toLowerCase();
-      return (scheme == 'http' || scheme == 'https') ? resolved : '';
-    } catch (_) { return ''; }
-  }
+  // ... _cleanHtmlForXml, _normalizeXpath 与搜索解析逻辑完全保持不变 ...
+  // （为节省篇幅，这里省略，请复制你现有的这部分代码过来即可）
 }

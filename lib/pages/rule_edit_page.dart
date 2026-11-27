@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/rule.dart';
 import '../services/storage_service.dart';
+import '../services/exceptions.dart'; // 引入异常类
 
 class RuleEditPage extends StatefulWidget {
   final AnimeRule rule;
@@ -51,20 +52,27 @@ class _RuleEditPageState extends State<RuleEditPage> {
       episodeListSelector: _episodeList.text.trim(),
       episodeLinkSelector: _episodeLink.text.trim(),
     );
-    if (rule.baseUrl.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('baseUrl 不能为空')),
-      );
-      return;
-    }
-    
-    final success = await _storage.upsertRule(rule);
-    if (success) {
-      if (mounted) Navigator.pop(context);
-    } else {
+
+    try {
+      // 核心改进：调用模型层进行校验
+      rule.validate(); 
+      
+      final success = await _storage.upsertRule(rule);
+      if (success) {
+        if (mounted) Navigator.pop(context);
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('保存规则失败，请检查磁盘空间'), backgroundColor: Colors.red),
+          );
+        }
+      }
+    } catch (e) {
+      // 捕获校验失败或存储异常
       if (mounted) {
+        String msg = e is RuleFormatException ? e.message : e.toString();
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('保存规则失败，请检查磁盘空间'), backgroundColor: Colors.red),
+          SnackBar(content: Text(msg), backgroundColor: Colors.red, duration: const Duration(seconds: 3)),
         );
       }
     }
@@ -93,30 +101,29 @@ class _RuleEditPageState extends State<RuleEditPage> {
           _field(
             _search,
             '搜索结果容器选择器',
-            'CSS selector，例如 .search-result-list',
+            'CSS 或 XPath 选择器，例如 .search-result-list 或 //div[@class="list"]',
           ),
           const SizedBox(height: 12),
           _field(
             _animeLink,
             '番剧条目选择器',
-            '容器内每个番剧对应的 CSS selector，例如 li.item',
+            '容器内每个番剧对应的选择器，例如 li.item 或 //li/a',
           ),
           const SizedBox(height: 12),
           _field(
             _episodeList,
             '剧集列表选择器',
-            '详情页中剧集条目的 CSS selector，例如 .episode-list a',
+            '详情页中剧集条目的选择器，例如 .episode-list a',
           ),
           const SizedBox(height: 12),
           _field(
             _episodeLink,
             '剧集链接选择器',
-            '剧集页中视频/播放链接的 CSS selector，例如 video, source, a.play-btn',
+            '剧集页中视频/播放链接的选择器，例如 video, source, a.play-btn',
           ),
           const SizedBox(height: 24),
           const Text(
-            '注意：v1 使用 CSS selector（非完整 XPath）。从 Kazumi 迁移规则时，'
-            '请将 //div[@class="x"] 这类写法转换为 .x。',
+            '注意：v2.0 已原生支持 Kazumi 的 XPath 语法。如果你的规则是从社区直接复制的，可以直接粘贴 // 开头的 XPath 代码，系统会自动进行解析。',
             style: TextStyle(fontSize: 12, color: Colors.grey),
           ),
         ],

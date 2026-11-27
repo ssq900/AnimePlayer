@@ -5,7 +5,7 @@ on:
     branches: [ "main", "master" ]
   pull_request:
     branches: [ "main", "master" ]
-  workflow_dispatch: # 允许在 GitHub 页面上手动点击运行
+  workflow_dispatch: # 允许手动点击运行
 
 jobs:
   build:
@@ -25,7 +25,33 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
-          cache: true # 开启 Flutter SDK 缓存
+          cache: true
+
+      # 🔥 核心：在云端重新生成 Android 目录并还原配置
+      - name: Recreate Android Folder & Restore Customizations
+        run: |
+          # 1. 备份原生的配置（防止重建时丢失）
+          cp android/app/src/main/AndroidManifest.xml AndroidManifest_backup.xml
+          cp -r android/app/src/main/res android_res_backup || true
+          cp android/app/build.gradle android_app_build_gradle_backup || true
+          cp android/app/build.gradle.kts android_app_build_gradle_kts_backup || true
+          
+          # 2. 彻底删除旧的 android 目录
+          rm -rf android
+          
+          # 3. 使用当前稳定版 Flutter 重新生成 android 工程
+          flutter create --platforms=android .
+          
+          # 4. 还原备份的 AndroidManifest.xml
+          cp AndroidManifest_backup.xml android/app/src/main/AndroidManifest.xml
+          
+          # 5. 如果备份了 build.gradle，则还原（优先保留你原来的配置）
+          if [ -f android_app_build_gradle_backup ]; then
+            cp android_app_build_gradle_backup android/app/build.gradle
+            rm -f android/app/build.gradle.kts
+          elif [ -f android_app_build_gradle_kts_backup ]; then
+            cp android_app_build_gradle_kts_backup android/app/build.gradle.kts
+          fi
 
       - name: Configure Gradle Mirror
         run: |

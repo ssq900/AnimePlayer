@@ -112,14 +112,23 @@ jobs:
           print("✅ build.gradle.kts 脱糖配置注入完成")
           PYEOF
 
-      # 🔥 核心新增：将 compileSdk 提升至 36，满足 flutter_plugin_android_lifecycle 的要求
       - name: Upgrade compileSdk to 36
         run: |
           sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 36/' android/app/build.gradle.kts
-          echo "✅ compileSdk 已升级至 36"
+          echo "✅ 应用模块 compileSdk 已升级至 36"
 
       - name: Flutter pub get
         run: flutter pub get
+
+      # 🔥 核心修复：提升 file_picker 插件的 compileSdk
+      - name: Upgrade file_picker compileSdk to 36
+        run: |
+          find ~/.pub-cache/hosted/pub.dev -path "*file_picker*/android/build.gradle" -type f | while read -r file; do
+            echo "Patching: $file"
+            sed -i 's/compileSdkVersion 34/compileSdkVersion 36/g' "$file"
+            sed -i 's/compileSdk = 34/compileSdk = 36/g' "$file"
+          done
+          echo "✅ file_picker 插件的 compileSdk 已升级"
 
       - name: Fix flutter_inappwebview ProGuard Compatibility
         run: |

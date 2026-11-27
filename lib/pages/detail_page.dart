@@ -35,7 +35,7 @@ class _DetailPageState extends State<DetailPage> {
     try {
       final eps = await _service.fetchEpisodes(widget.rule, widget.detailUrl);
       if (!mounted) return;
-      setState(() => _episodes = eps);
+      if (mounted) setState(() => _episodes = List<EpisodeItem>.from(eps));
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = e.toString());

@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../features/search/search_provider.dart';
 import '../models/rule.dart';
-import '../services/xpath_service.dart';
 
 class SearchPage extends ConsumerStatefulWidget {
   final List<AnimeRule> rules;
@@ -52,15 +51,19 @@ class _SearchPageState extends ConsumerState<SearchPage> {
           child: Text('搜索失败:\n$err', style: const TextStyle(color: Colors.red)),
         ),
         data: (results) {
-          if (results.isEmpty) return const Center(child: Text('暂无结果'));
+          if (results.isEmpty) {
+            return const Center(child: Text('暂无结果'));
+          }
           return ListView.builder(
             itemCount: results.length,
             itemBuilder: (context, i) {
               final r = results[i];
               return ListTile(
                 title: Text(r.title),
-                subtitle: Text(r.sourceName),
-                onTap: () {},
+                subtitle: Text(r.rule.name), // 适配真实的 rule 字段
+                onTap: () {
+                  // 这里保留你的跳转逻辑
+                },
               );
             },
           );

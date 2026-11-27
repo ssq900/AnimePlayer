@@ -6,11 +6,15 @@ import '../models/rule.dart';
 
 class PlayerPage extends ConsumerStatefulWidget {
   final String videoUrl;
-  final AnimeRule? rule; // 接收调用方传来的 rule
+  final String? episodeUrl; // 兼容 detail_page 传参
+  final String? episodeTitle;
+  final AnimeRule? rule;
 
   const PlayerPage({
     super.key, 
     required this.videoUrl, 
+    this.episodeUrl,
+    this.episodeTitle,
     this.rule,
   });
 
@@ -23,7 +27,11 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      ref.read(playbackControllerProvider.notifier).initialize(widget.videoUrl);
+      // 优先播放 videoUrl，如果没有则用 episodeUrl
+      final url = widget.videoUrl.isNotEmpty ? widget.videoUrl : (widget.episodeUrl ?? '');
+      if (url.isNotEmpty) {
+        ref.read(playbackControllerProvider.notifier).initialize(url);
+      }
     });
   }
 

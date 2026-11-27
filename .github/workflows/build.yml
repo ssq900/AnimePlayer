@@ -27,31 +27,42 @@ jobs:
           channel: 'stable'
           cache: true
 
-      # 🔥 核心：在云端重新生成 Android 目录并还原配置
       - name: Recreate Android Folder & Restore Customizations
         run: |
-          # 1. 备份原生的配置（防止重建时丢失）
-          cp android/app/src/main/AndroidManifest.xml AndroidManifest_backup.xml
-          cp -r android/app/src/main/res android_res_backup || true
-          cp android/app/build.gradle android_app_build_gradle_backup || true
-          cp android/app/build.gradle.kts android_app_build_gradle_kts_backup || true
+          # 1. 尝试备份，如果文件根本不存在则跳过（防止报错）
+          if [ -f android/app/src/main/AndroidManifest.xml ]; then
+            cp android/app/src/main/AndroidManifest.xml AndroidManifest_backup.xml
+          fi
+          if [ -f android/app/build.gradle ]; then
+            cp android/app/build.gradle android_app_build_gradle_backup
+          fi
+          if [ -f android/app/build.gradle.kts ]; then
+            cp android/app/build.gradle.kts android_app_build_gradle_kts_backup
+          fi
           
-          # 2. 彻底删除旧的 android 目录
+          # 2. 彻底删除旧的残缺目录，重新生成
           rm -rf android
-          
-          # 3. 使用当前稳定版 Flutter 重新生成 android 工程
           flutter create --platforms=android .
           
-          # 4. 还原备份的 AndroidManifest.xml
-          cp AndroidManifest_backup.xml android/app/src/main/AndroidManifest.xml
+          # 3. 还原配置（如果没有旧备份，就强行注入联网权限）
+          if [ -f AndroidManifest_backup.xml ]; then
+            cp AndroidManifest_backup.xml android/app/src/main/AndroidManifest.xml
+          else
+            # ⚠️ 核心注入：加上网络权限和允许 HTTP 明文请求
+            sed -i 's#<application#<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>\n    <application#' android/app/src/main/AndroidManifest.xml
+            sed -i 's#android:label="anime_aggregator"#android:label="anime_aggregator"\n        android:usesCleartextTraffic="true"#' android/app/src/main/AndroidManifest.xml
+          fi
           
-          # 5. 如果备份了 build.gradle，则还原（优先保留你原来的配置）
+          # 4. 还原 build.gradle（如果有的话）
           if [ -f android_app_build_gradle_backup ]; then
             cp android_app_build_gradle_backup android/app/build.gradle
             rm -f android/app/build.gradle.kts
           elif [ -f android_app_build_gradle_kts_backup ]; then
             cp android_app_build_gradle_kts_backup android/app/build.gradle.kts
           fi
+          
+          # 清理临时文件
+          rm -f AndroidManifest_backup.xml android_app_build_gradle_backup android_app_build_gradle_kts_backup
 
       - name: Configure Gradle Mirror
         run: |

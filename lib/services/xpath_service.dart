@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:flutter/foundation.dart'; // 核心修复：补全 debugPrint 的引入
+import 'package:flutter/foundation.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'package:xml/xml.dart' as xml;
@@ -17,6 +17,7 @@ class XPathService {
       throw NetworkException('非法的协议请求: 仅支持 HTTP/HTTPS');
     }
 
+    // 1. 轻量级 HTTP 探路
     try {
       final resp = await _client.get(Uri.parse(url), headers: {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'}).timeout(const Duration(seconds: 10));
       if (resp.statusCode == 200) {
@@ -29,6 +30,7 @@ class XPathService {
       debugPrint('[XPathService] HTTP probe failed, falling back to WebView: $e');
     }
 
+    // 2. 降级到 Headless WebView
     final completer = Completer<String>();
     HeadlessInAppWebView? webView;
     bool isDisposed = false;
@@ -78,16 +80,42 @@ class XPathService {
     }
   }
 
+  // 核心修复：使用更严谨的 HTML 到 XML 的清洗策略
   String _cleanHtmlForXml(String html) {
     try {
       String cleaned = html;
-      cleaned = cleaned.replaceAll(RegExp(r'<script\b[^>]*>([\s\S]*?)<\/script>'), '');
-      cleaned = cleaned.replaceAll(RegExp(r'<style\b[^>]*>([\s\S]*?)<\/style>'), '');
-      cleaned = cleaned.replaceAll(RegExp(r'<head\b[^>]*>([\s\S]*?)<\/head>'), '');
-      cleaned = cleaned.replaceAll(RegExp(r'<(link|meta|img|br|hr|input)([^>]*?)(?<!/)>'), r'<$1$2 />');
+
+      // 1. 去掉脚本和样式，减少解析负担
+      cleaned = cleaned.replaceAll(RegExp(r'<script\b[^>]*>([\s\S]*?)<\/script>', caseSensitive: false), '');
+      cleaned = cleaned.replaceAll(RegExp(r'<style\b[^>]*>([\s\S]*?)<\/style>', caseSensitive: false), '');
+
+      // 2. 交给容错极强的 html_parser 修复错位的标签 (例如 <div><a></div>)
       final doc = html_parser.parse(cleaned);
-      return doc.outerHtml;
-    } catch (_) { return html; }
+      cleaned = doc.outerHtml;
+
+      // 3. 替换 HTML 特有实体，防止 xml 解析器报错
+      cleaned = cleaned
+          .replaceAll('&nbsp;', '&#160;')
+          .replaceAll('&copy;', '&#169;')
+          .replaceAll('&reg;', '&#174;')
+          .replaceAll('&hellip;', '&#8230;');
+
+      // 4. 拿到修复后的 HTML 后，暴力匹配所有空标签，强制自闭合
+      final voidTags = r'img|br|hr|meta|link|input|source|area|base|col|embed|param|track|wbr';
+      cleaned = cleaned.replaceAllMapped(
+        RegExp('<$voidTags\\b([^>]*?)(?<!/)>', caseSensitive: false), 
+        (match) {
+          String tag = match.group(0)!;
+          if (tag.endsWith('/>')) return tag;
+          return tag.substring(0, tag.length - 1) + ' />';
+        }
+      );
+
+      return cleaned;
+    } catch (_) {
+      // 如果 html_parser 都炸了，直接返回原文本，由外层捕获异常
+      return html;
+    }
   }
 
   String _normalizeXpath(String xpath) {
@@ -98,7 +126,6 @@ class XPathService {
     return res;
   }
 
-  // 核心修复：补全缺失的 search 方法
   Future<List<SearchResult>> search(AnimeRule rule, String keyword) async {
     if (rule.searchSelector.trim().isEmpty) throw ParseException('规则错误: 搜索结果容器选择器为空');
     final encoded = Uri.encodeComponent(keyword);
@@ -144,7 +171,6 @@ class XPathService {
     }
   }
 
-  // 核心修复：补全缺失的 fetchEpisodes 方法
   Future<List<EpisodeItem>> fetchEpisodes(AnimeRule rule, String detailUrl) async {
     if (rule.episodeListSelector.trim().isEmpty) throw ParseException('剧集列表选择器为空');
     final rawHtml = await fetchHtml(detailUrl);
@@ -160,7 +186,6 @@ class XPathService {
     }
   }
 
-  // 核心修复：补全缺失的 resolveEpisodeLink 方法
   Future<String> resolveEpisodeLink(AnimeRule rule, String episodeUrl) async {
     if (rule.episodeLinkSelector.trim().isEmpty) return episodeUrl;
     final rawHtml = await fetchHtml(episodeUrl);

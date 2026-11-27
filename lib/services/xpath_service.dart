@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:http/http.dart' as http;
 import 'package:xml/xml.dart';
 import 'package:xpath_selector/xpath_selector.dart';
+import 'package:xpath_selector_xml_parser/xpath_selector_xml_parser.dart';
 import '../models/rule.dart';
 
 class XPathParseException implements Exception {
@@ -87,9 +88,9 @@ class XPathService {
   List<XmlElement> findElements(XmlNode context, String expr) {
     if (expr.trim().isEmpty) return const [];
     try {
-      final query = XPath(expr);
-      final results = query.query(context);
-      return results.map((r) => r.node).whereType<XmlElement>().toList();
+      // 使用 3.x 版本的正确 API
+      final result = XPath.xmlElement(context).query(expr);
+      return result.nodes.whereType<XmlElement>().toList();
     } catch (e) {
       throw XPathParseException('XPath "$expr" 执行失败: $e');
     }

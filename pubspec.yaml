@@ -15,7 +15,8 @@ dependencies:
   flutter_riverpod: ^2.6.1
   http: ^1.2.0
   xml: ^6.5.0
-  xpath_selector: ^0.4.4
+  xpath_selector: ^3.0.2
+  xpath_selector_xml_parser: ^3.0.0  # 适配 3.0.2 版本必须的解析器
   video_player: ^2.9.1
 
   # 如果你的原项目有其他依赖（如 webview_flutter），请在这里加回来

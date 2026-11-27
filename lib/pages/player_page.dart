@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -10,7 +11,6 @@ import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:video_player/video_player.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:volume_controller/volume_controller.dart';
@@ -19,6 +19,8 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import '../models/rule.dart';
 import '../services/xpath_service.dart';
 import '../services/storage_service.dart';
+import '../services/playback_engine.dart';
+import '../services/fallback_manager.dart';
 import '../widgets/danmaku_overlay.dart';
 import '../widgets/danmaku_heatmap.dart';
 import 'detail_page.dart';
@@ -51,14 +53,17 @@ class PlayerPage extends StatefulWidget {
 class _PlayerPageState extends State<PlayerPage> {
   final _xpath = XPathService();
   final _storage = StorageService();
+  final _engine = PlaybackEngine();
+  FallbackManager? _fallbackManager;
+  
   final GlobalKey _globalKey = GlobalKey();
 
-  VideoPlayerController? _controller;
   bool _loading = true;
   String? _resolvedUrl;
   String? _error;
+  bool _isFallbacking = false;
   
-  // ====== 网页媒体流监听与接管 ======
+  // 网页嗅探状态
   Set<String> _sniffedUrls = {}; 
   bool _isWebViewMode = false; 
   String? _webViewCookies; 
@@ -68,7 +73,7 @@ class _PlayerPageState extends State<PlayerPage> {
   Timer? _progressTimer;
   int _sleepMinutesRemaining = 0;
 
-  // 弹幕与 OP/ED 配置
+  // 弹幕、OP/ED 与字幕
   List<DanmakuItem> _danmakus = [];
   final _danmakuController = TextEditingController();
   bool _showDanmakuInput = false;
@@ -77,8 +82,6 @@ class _PlayerPageState extends State<PlayerPage> {
   double _danmakuOpacity = 1.0;
   Duration? _opEndTime;
   bool _showSkipOpBtn = false;
-
-  // 字幕配置
   List<SubtitleItem> _subtitles = [];
   String? _currentSubtitleText;
   bool _subtitleEnabled = true;
@@ -100,6 +103,7 @@ class _PlayerPageState extends State<PlayerPage> {
   @override
   void initState() {
     super.initState();
+    _engine.errorStream.listen(_handlePlaybackError);
     _init();
   }
 
@@ -131,15 +135,28 @@ class _PlayerPageState extends State<PlayerPage> {
       _resolvedUrl = url;
 
       await _storage.addHistory(HistoryItem(
-        ruleId: widget.rule.id,
-        ruleName: widget.rule.name,
-        animeTitle: widget.animeTitle,
-        episodeTitle: widget.title,
-        episodeUrl: widget.episodeUrl,
-        timestamp: DateTime.now().millisecondsSinceEpoch,
+        ruleId: widget.rule.id, ruleName: widget.rule.name,
+        animeTitle: widget.animeTitle, episodeTitle: widget.title,
+        episodeUrl: widget.episodeUrl, timestamp: DateTime.now().millisecondsSinceEpoch,
       ));
 
       await _loadDanmakus();
+
+      // 初始化 Fallback 候选池
+      try {
+        final allRules = await _storage.loadRules();
+        final otherRules = allRules.where((r) => r.id != widget.rule.id).toList();
+        List<SearchResult> candidates = [SearchResult(title: widget.title, link: url, rule: widget.rule)];
+        
+        for (var r in otherRules) {
+          _xpath.search(r, widget.animeTitle).then((res) {
+             if(res.isNotEmpty) candidates.addAll(res);
+          }).catchError((_) {});
+        }
+        _fallbackManager = FallbackManager(candidates, maxRetries: 2);
+      } catch (e) {
+        debugPrint('FallbackManager init failed: $e');
+      }
 
       if (_isDirectVideo(url)) {
         await _initPlayer(url);
@@ -153,7 +170,6 @@ class _PlayerPageState extends State<PlayerPage> {
       if (mounted) {
         setState(() {
           _error = e.toString();
-          _resolvedUrl = null;
           _loading = false;
         });
       }
@@ -175,115 +191,124 @@ class _PlayerPageState extends State<PlayerPage> {
         headers['Cookie'] = _webViewCookies!;
       }
 
-      final c = VideoPlayerController.networkUrl(
-        Uri.parse(url),
-        httpHeaders: headers,
-      );
-      await c.initialize();
+      await _engine.open(url, headers: headers);
       
-      if (!mounted) {
-        await c.dispose();
-        return;
-      }
-      
-      setState(() {
-        _controller = c;
-        _loading = false;
-      });
-      c.setPlaybackSpeed(_playbackSpeed);
+      if (!mounted) return;
+      setState(() => _loading = false);
+      _engine.setPlaybackSpeed(_playbackSpeed);
       
       final prefs = await SharedPreferences.getInstance();
       final savedMs = prefs.getInt(_progressKey) ?? 0;
-      if (savedMs > 5000 && savedMs < c.value.duration.inMilliseconds - 10000) {
-        await c.seekTo(Duration(milliseconds: savedMs));
+      if (savedMs > 5000 && _engine.isInitialized && savedMs < _engine.controller!.value.duration.inMilliseconds - 10000) {
+        _engine.seek(Duration(milliseconds: savedMs));
         _showTip('已为您续播至 ${_formatDuration(Duration(milliseconds: savedMs))}');
       }
       
-      c.play();
-      
-      c.addListener(() {
-        if (!mounted) return;
-        if (_subtitleEnabled && _subtitles.isNotEmpty) {
-          final current = c.value.position;
-          final sub = _subtitles.firstWhere(
-            (s) => current >= s.start && current <= s.end,
-            orElse: () => SubtitleItem(Duration.zero, Duration.zero, ''),
-          );
-          if (_currentSubtitleText != sub.text) {
-            setState(() => _currentSubtitleText = sub.text);
-          }
-        }
-
-        if (_danmakuEnabled) setState(() {});
-
-        if (_opEndTime != null) {
-          final current = c.value.position;
-          if (current < _opEndTime! && current > const Duration(seconds: 2)) {
-            if (!_showSkipOpBtn) setState(() => _showSkipOpBtn = true);
-          } else {
-            if (_showSkipOpBtn) setState(() => _showSkipOpBtn = false);
-          }
-        }
-      });
-
       _progressTimer?.cancel();
       _progressTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
-        if (c.value.isInitialized) {
-          prefs.setInt(_progressKey, c.value.position.inMilliseconds);
+        if (_engine.isInitialized) {
+          prefs.setInt(_progressKey, _engine.controller!.value.position.inMilliseconds);
         }
       });
     } catch (e) {
       if (mounted) {
         setState(() {
-          _error = '媒体流解析失败：可能受 DRM 保护或设备解码器不支持。\n($e)';
+          _error = '媒体流解析失败：可能受 DRM 保护或需要高级鉴权。\n($e)';
           _loading = false;
           _isWebViewMode = true;
         });
-        
-        // 核心机制：HLS流解析失败回退弹窗
-        if (e is PlatformException || e.toString().contains('Unrecognized') || e.toString().contains('Codec')) {
-          _showFallbackDialog(_resolvedUrl ?? url, e.toString());
-        }
       }
     }
   }
 
-  // 核心功能：外部播放器降级诊断弹窗
-  void _showFallbackDialog(String url, String errorReason) {
+  // 处理底层的回退逻辑
+  void _handlePlaybackError(PlaybackError error) async {
+    if (!mounted || _fallbackManager == null) return;
+    
+    if (_fallbackManager!.shouldFallback(error)) {
+      setState(() => _isFallbacking = true);
+      _showTip('当前源不可用，正在尝试自动切换...');
+      
+      final nextMedia = _fallbackManager!.getNextCandidate(_resolvedUrl ?? '');
+      if (nextMedia != null) {
+        _resolvedUrl = nextMedia.link;
+        await _initPlayer(nextMedia.link);
+        if (mounted) setState(() => _isFallbacking = false);
+      } else {
+        setState(() {
+          _isFallbacking = false;
+          _loading = false;
+        });
+        _showFallbackSourceDialog();
+      }
+    }
+  }
+
+  void _showFallbackSourceDialog() {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('无法使用内置播放器播放'),
-        content: Text('诊断信息：$errorReason\n\n当前设备的硬件解码器不支持该视频格式，或者该流受 DRM 保护。\n是否尝试用外部播放器打开？'),
+        title: const Text('播放失败'),
+        content: const Text('当前设备解码器不支持该格式，或者所有备用源均失效。是否尝试外部播放器或手动换源？'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          TextButton(
+            onPressed: () { Navigator.pop(ctx); _openExternal(_resolvedUrl!); },
+            child: const Text('外部打开'),
+          ),
           FilledButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              _openExternal(url);
-            }, 
-            child: const Text('用外部播放器打开')
+            onPressed: () { Navigator.pop(ctx); _showChangeSourceSheet(); },
+            child: const Text('手动换源'),
           ),
         ],
       ),
     );
   }
 
-  void _handleSniffedUrl(String url, InAppWebViewController controller) async {
-    if (url.isEmpty || !url.startsWith('http')) return;
-    if (!url.contains('.mp4') && !url.contains('.m3u8')) return;
-    if (url.startsWith('blob:') || url.startsWith('data:')) return;
+  // 嗅探 JS 脚本
+  final String _sniffJs = """
+    (function() {
+        var origXhr = window.XMLHttpRequest.prototype.open;
+        window.XMLHttpRequest.prototype.open = function(method, url) {
+            if (url && typeof url === 'string' && (url.includes('.m3u8') || url.includes('.mp4'))) {
+                window.flutter_inappwebview.callHandler('jsSniffed', url);
+            }
+            return origXhr.apply(this, arguments);
+        };
+        var origFetch = window.fetch;
+        window.fetch = function(input) {
+            var url = typeof input === 'string' ? input : (input ? input.url : '');
+            if (url && (url.includes('.m3u8') || url.includes('.mp4'))) {
+                window.flutter_inappwebview.callHandler('jsSniffed', url);
+            }
+            return origFetch.apply(this, arguments);
+        };
+        var observer = new MutationObserver(function(mutations) {
+            mutations.forEach(function(m) {
+                if (m.target.tagName === 'VIDEO' && m.target.src && m.target.src.includes('.m3u8')) {
+                    window.flutter_inappwebview.callHandler('jsSniffed', m.target.src);
+                }
+            });
+        });
+        observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['src'] });
+    })();
+  """;
 
+  void _handleSniffedUrl(String url) async {
+    if (url.isEmpty || !url.startsWith('http') || url.startsWith('blob:') || url.startsWith('data:')) return;
+    
     if (!_sniffedUrls.contains(url)) {
       final cookies = await CookieManager.instance().getCookies(url: WebUri(url));
       if (cookies.isNotEmpty) {
         _webViewCookies = cookies.map((c) => '${c.name}=${c.value}').join('; ');
       }
-
-      setState(() {
-        _sniffedUrls.add(url);
-      });
+      if (mounted) setState(() => _sniffedUrls.add(url));
     }
+  }
+
+  bool _handleNativeIntercept(WebResourceRequest request) {
+    final url = request.url.toString();
+    _handleSniffedUrl(url);
+    return false;
   }
 
   Future<void> _showChangeSourceSheet() async {
@@ -292,10 +317,7 @@ class _PlayerPageState extends State<PlayerPage> {
     final otherRules = allRules.where((r) => r.id != widget.rule.id).toList();
     
     if (otherRules.isEmpty) {
-      if (mounted) {
-        Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('暂无其他可用规则')));
-      }
+      if (mounted) { Navigator.pop(context); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('暂无其他可用规则'))); }
       return;
     }
 
@@ -320,36 +342,25 @@ class _PlayerPageState extends State<PlayerPage> {
       context: context,
       isScrollControlled: true,
       builder: (ctx) => DraggableScrollableSheet(
-        expand: false,
-        initialChildSize: 0.6,
-        minChildSize: 0.4,
-        maxChildSize: 0.9,
+        expand: false, initialChildSize: 0.6, minChildSize: 0.4, maxChildSize: 0.9,
         builder: (_, scrollController) => Column(
           children: [
             AppBar(
-              title: const Text('选择其他源播放'),
-              automaticallyImplyLeading: false,
+              title: const Text('选择其他源播放'), automaticallyImplyLeading: false,
               actions: [IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(ctx))],
             ),
             Expanded(
               child: ListView.separated(
-                controller: scrollController,
-                itemCount: results.length,
+                controller: scrollController, itemCount: results.length,
                 separatorBuilder: (_, __) => const Divider(height: 1),
                 itemBuilder: (_, i) {
                   final r = results[i];
                   return ListTile(
-                    title: Text(r.title),
-                    subtitle: Text(r.rule.name),
+                    title: Text(r.title), subtitle: Text(r.rule.name),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: () {
                       Navigator.pop(ctx);
-                      Navigator.pushReplacement(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => DetailPage(rule: r.rule, detailUrl: r.link, title: r.title),
-                        ),
-                      );
+                      Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => DetailPage(rule: r.rule, detailUrl: r.link, title: r.title)));
                     },
                   );
                 },
@@ -401,39 +412,42 @@ class _PlayerPageState extends State<PlayerPage> {
     return null;
   }
 
-  // 手势控制
-  void _onDoubleTap() { if (_controller == null) return; if (_controller!.value.isPlaying) { _controller!.pause(); _showTip('暂停'); } else { _controller!.play(); _showTip('播放'); } }
-  void _onLongPressStart(LongPressStartDetails details) { if (_controller == null) return; _controller!.setPlaybackSpeed(2.0); _showTip('2x 倍速中'); }
-  void _onLongPressEnd(LongPressEndDetails details) { if (_controller == null) return; _controller!.setPlaybackSpeed(_playbackSpeed); setState(() => _gestureTip = null); _gestureTipTimer?.cancel(); }
-  void _onHorizontalDragStart(DragStartDetails details) { if (_controller == null) return; _dragStartX = details.localPosition.dx; _dragStartPosition = _controller!.value.position; _isDragging = true; _gestureTipTimer?.cancel(); }
+  void _onDoubleTap() { if (!_engine.isInitialized) return; if (_engine.isPlaying) { _engine.pause(); _showTip('暂停'); } else { _engine.play(); _showTip('播放'); } }
+  void _onLongPressStart(LongPressStartDetails details) { if (!_engine.isInitialized) return; _engine.setPlaybackSpeed(2.0); _showTip('2x 倍速中'); }
+  void _onLongPressEnd(LongPressEndDetails details) { if (!_engine.isInitialized) return; _engine.setPlaybackSpeed(_playbackSpeed); setState(() => _gestureTip = null); _gestureTipTimer?.cancel(); }
+  void _onHorizontalDragStart(DragStartDetails details) { if (!_engine.isInitialized) return; _dragStartX = details.localPosition.dx; _dragStartPosition = _engine.controller!.value.position; _isDragging = true; _gestureTipTimer?.cancel(); }
+  
   void _onHorizontalDragUpdate(DragUpdateDetails details) {
-    if (!_isDragging || _controller == null) return;
+    if (!_isDragging || !_engine.isInitialized) return;
     final deltaX = details.localPosition.dx - _dragStartX;
     final seekSeconds = (deltaX / MediaQuery.of(context).size.width) * 600;
     final newPosition = _dragStartPosition + Duration(seconds: seekSeconds.toInt());
-    final targetPos = newPosition > Duration.zero && newPosition < _controller!.value.duration ? newPosition : (newPosition <= Duration.zero ? Duration.zero : _controller!.value.duration);
+    final targetPos = newPosition > Duration.zero && newPosition < _engine.controller!.value.duration ? newPosition : (newPosition <= Duration.zero ? Duration.zero : _engine.controller!.value.duration);
     setState(() => _gestureTip = '${seekSeconds > 0 ? "快进" : "快退"} ${_formatDuration(targetPos)}');
   }
+  
   void _onHorizontalDragEnd(DragEndDetails details) {
-    if (!_isDragging || _controller == null) return;
+    if (!_isDragging || !_engine.isInitialized) return;
     _isDragging = false;
     if (_gestureTip != null && _gestureTip!.contains('快')) {
       final parts = _gestureTip!.split(' ').last.split(':');
-      if (parts.length == 2) _controller!.seekTo(Duration(minutes: int.tryParse(parts[0]) ?? 0, seconds: int.tryParse(parts[1]) ?? 0));
+      if (parts.length == 2) _engine.seek(Duration(minutes: int.tryParse(parts[0]) ?? 0, seconds: int.tryParse(parts[1]) ?? 0));
     }
     _gestureTipTimer?.cancel();
     setState(() => _gestureTip = null);
   }
+  
   void _onVerticalDragStart(DragStartDetails details) {
-    if (_controller == null) return;
+    if (!_engine.isInitialized) return;
     _dragStartY = details.localPosition.dy;
     _isDragging = true;
     _gestureTipTimer?.cancel();
     if (details.localPosition.dx < MediaQuery.of(context).size.width / 2) ScreenBrightness().current.then((val) => _startBrightness = val);
     else VolumeController.instance.getVolume().then((val) => _startVolume = val);
   }
+  
   void _onVerticalDragUpdate(DragUpdateDetails details) {
-    if (!_isDragging || _controller == null) return;
+    if (!_isDragging || !_engine.isInitialized) return;
     final ratio = (_dragStartY - details.localPosition.dy) / (MediaQuery.of(context).size.height / 2);
     if (details.localPosition.dx < MediaQuery.of(context).size.width / 2) {
       double newVal = (_startBrightness + ratio).clamp(0.0, 1.0);
@@ -447,7 +461,6 @@ class _PlayerPageState extends State<PlayerPage> {
   }
   void _onVerticalDragEnd(DragEndDetails details) { _isDragging = false; _gestureTipTimer?.cancel(); setState(() => _gestureTip = null); }
 
-  // 投屏
   Future<void> _castToDevice() async {
     if (_resolvedUrl == null) return;
     showDialog(context: context, barrierDismissible: false, builder: (_) => const Center(child: CircularProgressIndicator()));
@@ -485,7 +498,7 @@ class _PlayerPageState extends State<PlayerPage> {
                   if (mounted) {
                     Navigator.pop(context);
                     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已推送到电视')));
-                    _controller?.pause();
+                    _engine.pause();
                   }
                 } catch (e) {
                   if (mounted) { Navigator.pop(context); ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('投屏失败: $e'))); }
@@ -500,10 +513,9 @@ class _PlayerPageState extends State<PlayerPage> {
     }
   }
 
-  // OP / 弹幕 / 播放速度
   Future<void> _markOpEnd() async {
-    if (_controller == null) return;
-    final current = _controller!.value.position;
+    if (!_engine.isInitialized) return;
+    final current = _engine.controller!.value.position;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt(_opKey, current.inMilliseconds);
     setState(() => _opEndTime = current);
@@ -561,8 +573,8 @@ class _PlayerPageState extends State<PlayerPage> {
 
   Future<void> _sendDanmaku() async {
     final text = _danmakuController.text.trim();
-    if (text.isEmpty || _controller == null) return;
-    setState(() { _danmakus.add(DanmakuItem(text: text, time: _controller!.value.position)); _showDanmakuInput = false; _danmakuController.clear(); });
+    if (text.isEmpty || !_engine.isInitialized) return;
+    setState(() { _danmakus.add(DanmakuItem(text: text, time: _engine.controller!.value.position)); _showDanmakuInput = false; _danmakuController.clear(); });
     await _saveDanmakus();
     FocusScope.of(context).unfocus();
   }
@@ -614,8 +626,8 @@ class _PlayerPageState extends State<PlayerPage> {
   }
 
   void _setSpeed(double speed) async {
-    if (_controller != null) {
-      _controller!.setPlaybackSpeed(speed);
+    if (_engine.isInitialized) {
+      _engine.setPlaybackSpeed(speed);
       setState(() => _playbackSpeed = speed);
       await (await SharedPreferences.getInstance()).setDouble('playback_speed', speed);
     }
@@ -627,7 +639,7 @@ class _PlayerPageState extends State<PlayerPage> {
     setState(() => _sleepMinutesRemaining = minutes);
     _sleepTimer = Timer.periodic(const Duration(minutes: 1), (timer) {
       if (_sleepMinutesRemaining <= 1) {
-        _sleepTimer?.cancel(); _sleepTimer = null; _controller?.pause();
+        _sleepTimer?.cancel(); _sleepTimer = null; _engine.pause();
         if (mounted) { setState(() => _sleepMinutesRemaining = 0); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('定时关闭已生效，视频已暂停'))); }
       } else { if (mounted) setState(() => _sleepMinutesRemaining--); }
     });
@@ -635,19 +647,11 @@ class _PlayerPageState extends State<PlayerPage> {
 
   @override
   void dispose() {
-    _sleepTimer?.cancel(); 
-    _gestureTipTimer?.cancel(); 
-    _progressTimer?.cancel(); 
-    _danmakuController.dispose();
-    
-    if (_controller != null && _controller!.value.isInitialized) {
-       SharedPreferences.getInstance().then((prefs) => prefs.setInt(_progressKey, _controller!.value.position.inMilliseconds));
+    _sleepTimer?.cancel(); _gestureTipTimer?.cancel(); _progressTimer?.cancel(); _danmakuController.dispose();
+    if (_engine.isInitialized) {
+       SharedPreferences.getInstance().then((prefs) => prefs.setInt(_progressKey, _engine.controller!.value.position.inMilliseconds));
     }
-    
-    _controller?.removeListener(() {}); 
-    _controller?.dispose(); 
-    _controller = null; // 核心修复：显式置空，避免 State 回收后 VideoPlayer 仍在后台绘制
-    
+    _engine.dispose();
     ScreenBrightness().resetScreenBrightness();
     super.dispose();
   }
@@ -662,7 +666,7 @@ class _PlayerPageState extends State<PlayerPage> {
         title: Text(widget.title, style: const TextStyle(fontSize: 16)),
         actions: [
           IconButton(icon: const Icon(Icons.swap_horiz), tooltip: '一键换源', onPressed: _showChangeSourceSheet),
-          if (_controller != null && _controller!.value.isInitialized) ...[
+          if (_engine.isInitialized) ...[
             IconButton(icon: const Icon(Icons.subtitles), tooltip: '加载字幕', onPressed: _loadSubtitleFile),
             IconButton(icon: const Icon(Icons.screenshot_monitor), tooltip: '投屏', onPressed: _castToDevice),
             IconButton(icon: const Icon(Icons.camera_alt_outlined), tooltip: '截图分享', onPressed: _shareScreenshot),
@@ -677,9 +681,9 @@ class _PlayerPageState extends State<PlayerPage> {
               else if (value == 'open_external' && _resolvedUrl != null) _openExternal(_resolvedUrl!);
             },
             itemBuilder: (context) => [
-              if (_controller == null || !_controller!.value.isInitialized)
+              if (!_engine.isInitialized)
                 const PopupMenuItem(value: 'open_external', child: Text('🌐 用外部浏览器打开')),
-              if (_controller != null && _controller!.value.isInitialized) ...[
+              if (_engine.isInitialized) ...[
                 const PopupMenuItem(value: 'mark_op', child: Text('📍 记录当前为片头结束')),
                 const PopupMenuItem(value: 'danmaku_settings', child: Text('⚙️ 弹幕设置(屏蔽词/透明度)')),
                 const PopupMenuItem(value: 'import_danmaku', child: Text('📥 导入本地弹幕 (JSON)')),
@@ -695,8 +699,17 @@ class _PlayerPageState extends State<PlayerPage> {
       ),
       extendBodyBehindAppBar: true,
       body: Center(
-        child: _loading
-            ? const CircularProgressIndicator()
+        child: _loading || _isFallbacking
+            ? Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const CircularProgressIndicator(),
+                  if (_isFallbacking) ...[
+                    const SizedBox(height: 16),
+                    const Text('当前源异常，正在自动切换备用源...', style: TextStyle(color: Colors.white)),
+                  ]
+                ],
+              )
             : _error != null
                 ? Padding(
                     padding: const EdgeInsets.all(24),
@@ -711,7 +724,7 @@ class _PlayerPageState extends State<PlayerPage> {
                   )
                 : _isWebViewMode
                     ? _buildWebViewPlayer()
-                    : _controller != null && _controller!.value.isInitialized
+                    : _engine.isInitialized
                         ? _buildVideoPlayer()
                         : const Text('加载中...', style: TextStyle(color: Colors.white)),
       ),
@@ -724,15 +737,26 @@ class _PlayerPageState extends State<PlayerPage> {
       children: [
         InAppWebView(
           initialUrlRequest: URLRequest(url: WebUri(_resolvedUrl!)),
+          initialUserScripts: UnmodifiableListView([
+            UserScript(source: _sniffJs, injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START)
+          ]),
           initialSettings: InAppWebViewSettings(
             javaScriptEnabled: true,
             mediaPlaybackRequiresUserGesture: false,
             allowsInlineMediaPlayback: true,
             useHybridComposition: true,
           ),
-          onLoadResource: (controller, resource) {
-            final url = resource.url.toString();
-            _handleSniffedUrl(url, controller);
+          onWebViewCreated: (controller) {
+            controller.addJavaScriptHandler(
+              handlerName: 'jsSniffed',
+              callback: (args) {
+                if (args.isNotEmpty) _handleSniffedUrl(args[0].toString());
+              },
+            );
+          },
+          shouldInterceptRequest: (controller, request) async {
+            _handleNativeIntercept(request);
+            return null;
           },
         ),
         
@@ -793,13 +817,13 @@ class _PlayerPageState extends State<PlayerPage> {
         child: Stack(
           alignment: Alignment.center,
           children: [
-            AspectRatio(aspectRatio: _controller!.value.aspectRatio, child: VideoPlayer(_controller!)),
+            AspectRatio(aspectRatio: _engine.controller!.value.aspectRatio, child: VideoPlayer(_engine.controller!)),
             if (_subtitleEnabled && _currentSubtitleText != null && _currentSubtitleText!.isNotEmpty)
               Positioned(bottom: 80, left: 20, right: 20, child: Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6), decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(4)), child: Text(_currentSubtitleText!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold, shadows: [Shadow(color: Colors.black, blurRadius: 2, offset: Offset(1, 1))])))),
             if (_showSkipOpBtn && _opEndTime != null)
-              Positioned(right: 16, bottom: 120, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.black54, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20))), onPressed: () { _controller!.seekTo(_opEndTime!); setState(() => _showSkipOpBtn = false); }, child: Text('跳过片头 ${_formatDuration(_opEndTime! - _controller!.value.position)}'))),
+              Positioned(right: 16, bottom: 120, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.black54, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20))), onPressed: () { _engine.seek(_opEndTime!); setState(() => _showSkipOpBtn = false); }, child: Text('跳过片头 ${_formatDuration(_opEndTime! - _engine.controller!.value.position)}'))),
             if (_danmakuEnabled)
-              DanmakuOverlay(currentPosition: _controller!.value.position, danmakus: _danmakus, isPlaying: _controller!.value.isPlaying, blockWords: _blockWords, opacity: _danmakuOpacity),
+              DanmakuOverlay(currentPosition: _engine.controller!.value.position, danmakus: _danmakus, isPlaying: _engine.isPlaying, blockWords: _blockWords, opacity: _danmakuOpacity),
             if (_gestureTip != null)
               Container(padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12), decoration: BoxDecoration(color: Colors.black.withOpacity(0.7), borderRadius: BorderRadius.circular(8)), child: Text(_gestureTip!, style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold))),
             Positioned(
@@ -810,14 +834,14 @@ class _PlayerPageState extends State<PlayerPage> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    if (_controller!.value.duration.inSeconds > 0) DanmakuHeatmap(danmakus: _danmakus, totalDuration: _controller!.value.duration, currentPosition: _controller!.value.position),
+                    if (_engine.controller!.value.duration.inSeconds > 0) DanmakuHeatmap(danmakus: _danmakus, totalDuration: _engine.controller!.value.duration, currentPosition: _engine.controller!.value.position),
                     if (_showDanmakuInput)
                       Row(children: [Expanded(child: TextField(controller: _danmakuController, autofocus: true, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(hintText: '发一条友善的弹幕...', hintStyle: TextStyle(color: Colors.white54), filled: true, fillColor: Colors.white12, border: OutlineInputBorder(borderSide: BorderSide.none), contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8)), onSubmitted: (_) => _sendDanmaku())), IconButton(icon: const Icon(Icons.send, color: Colors.deepPurpleAccent), onPressed: _sendDanmaku)]),
-                    VideoProgressIndicator(_controller!, allowScrubbing: true, colors: const VideoProgressColors(playedColor: Colors.deepPurpleAccent)),
+                    VideoProgressIndicator(_engine.controller!, allowScrubbing: true, colors: const VideoProgressColors(playedColor: Colors.deepPurpleAccent)),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Row(children: [IconButton(icon: Icon(_controller!.value.isPlaying ? Icons.pause : Icons.play_arrow, color: Colors.white), onPressed: () { setState(() { _controller!.value.isPlaying ? _controller!.pause() : _controller!.play(); }); }), IconButton(icon: const Icon(Icons.chat_bubble_outline, color: Colors.white), onPressed: () { setState(() => _showDanmakuInput = !_showDanmakuInput); }), Text('${_formatDuration(_controller!.value.position)} / ${_formatDuration(_controller!.value.duration)}', style: const TextStyle(color: Colors.white, fontSize: 12))]),
+                        Row(children: [IconButton(icon: Icon(_engine.isPlaying ? Icons.pause : Icons.play_arrow, color: Colors.white), onPressed: () { setState(() { _engine.isPlaying ? _engine.pause() : _engine.play(); }); }), IconButton(icon: const Icon(Icons.chat_bubble_outline, color: Colors.white), onPressed: () { setState(() => _showDanmakuInput = !_showDanmakuInput); }), Text('${_formatDuration(_engine.controller!.value.position)} / ${_formatDuration(_engine.controller!.value.duration)}', style: const TextStyle(color: Colors.white, fontSize: 12))]),
                         Row(children: [0.5, 1.0, 1.5, 2.0].map((speed) { return GestureDetector(onTap: () => _setSpeed(speed), child: Container(margin: const EdgeInsets.symmetric(horizontal: 4), padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), decoration: BoxDecoration(color: _playbackSpeed == speed ? Colors.deepPurple : Colors.white24, borderRadius: BorderRadius.circular(4)), child: Text('${speed}x', style: const TextStyle(color: Colors.white, fontSize: 12)))); }).toList()),
                       ],
                     ),

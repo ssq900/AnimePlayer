@@ -44,6 +44,7 @@ jobs:
           fi
           rm -f AndroidManifest_backup.xml
 
+          # 🔥 关键更新：升级至 Flutter 3.50 建议的版本
           cat << 'EOF' > android/settings.gradle.kts
           pluginManagement {
               val flutterSdkPath = run {
@@ -68,19 +69,19 @@ jobs:
           
           plugins {
               id("dev.flutter.flutter-plugin-loader") version "1.0.0"
-              id("com.android.application") version "9.1.1" apply false
-              id("org.jetbrains.kotlin.android") version "2.4.10" apply false
+              id("com.android.application") version "9.3.1" apply false
+              id("org.jetbrains.kotlin.android") version "2.4.20" apply false
           }
           
           include(":app")
           EOF
 
-          sed -i 's/distributionUrl=.*/distributionUrl=https\\:\/\/services.gradle.org\/distributions\/gradle-9.3.1-bin.zip/' android/gradle/wrapper/gradle-wrapper.properties
+          # 更新 Gradle Wrapper 至 9.5.0
+          sed -i 's/distributionUrl=.*/distributionUrl=https\\:\/\/services.gradle.org\/distributions\/gradle-9.5.0-bin.zip/' android/gradle/wrapper/gradle-wrapper.properties
 
           echo "android.newDsl=false" >> android/gradle.properties
           echo "android.builtInKotlin=false" >> android/gradle.properties
 
-      # 🔥 核心修复：使用 python 脚本安全、精准地注入脱糖配置
       - name: Inject Core Library Desugaring (Python)
         run: |
           python3 - << 'PYEOF'
@@ -90,7 +91,6 @@ jobs:
           with open(path, 'r') as f:
               content = f.read()
 
-          # 1. 注入 compileOptions
           if 'isCoreLibraryDesugaringEnabled' not in content:
               compile_options = """
               compileOptions {
@@ -101,7 +101,6 @@ jobs:
               """
               content = re.sub(r'android\s*\{', 'android {\n' + compile_options, content, count=1)
 
-          # 2. 注入 dependencies
           if 'desugar_jdk_libs' not in content:
               desugar_dep = """
               dependencies {

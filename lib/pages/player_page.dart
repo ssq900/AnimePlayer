@@ -2,10 +2,17 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:video_player/video_player.dart';
 import '../features/player/playback_controller.dart';
+import '../models/rule.dart';
 
 class PlayerPage extends ConsumerStatefulWidget {
   final String videoUrl;
-  const PlayerPage({super.key, required this.videoUrl});
+  final AnimeRule? rule; // 接收调用方传来的 rule
+
+  const PlayerPage({
+    super.key, 
+    required this.videoUrl, 
+    this.rule,
+  });
 
   @override
   ConsumerState<PlayerPage> createState() => _PlayerPageState();

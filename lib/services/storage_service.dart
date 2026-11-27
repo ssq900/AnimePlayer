@@ -5,55 +5,74 @@ import '../models/rule.dart';
 class StorageService {
   static const _keyRules = 'anime_rules';
   static const _keyHistory = 'watch_history';
+  static const _keySchedules = 'schedules';
 
-  // ================= 规则相关 =================
-  Future<void> saveRules(List<AnimeRule> rules) async {
-    final prefs = await SharedPreferences.getInstance();
-    final jsonList = rules.map((e) => e.toJson()).toList();
-    await prefs.setString(_keyRules, jsonEncode(jsonList));
+  Future<void> init() async {
+    // 初始化动作，目前留空
   }
 
-  Future<List<AnimeRule>> getRules() async {
+  // ================= 规则 =================
+  Future<void> saveRules(List<AnimeRule> rules) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_keyRules, jsonEncode(rules.map((e) => e.toJson()).toList()));
+  }
+
+  Future<List<AnimeRule>> loadRules() async {
     final prefs = await SharedPreferences.getInstance();
     final str = prefs.getString(_keyRules);
     if (str == null) return [];
     try {
       final List<dynamic> jsonList = jsonDecode(str);
       return jsonList.map((e) => AnimeRule.fromJson(e)).toList();
-    } catch (e) {
+    } catch (_) {
       return [];
     }
   }
 
-  // ================= 历史记录相关 =================
-  // 使用 dynamic 接收，避免因为项目中 HistoryItem 的类名或结构不同导致编译报错
-  Future<void> saveHistory(List<dynamic> history) async {
-    final prefs = await SharedPreferences.getInstance();
-    final jsonList = history.map((e) {
-      try {
-        // 假设你的 HistoryItem 实现了 toJson 方法
-        return e.toJson();
-      } catch (_) {
-        return e;
-      }
-    }).toList();
-    await prefs.setString(_keyHistory, jsonEncode(jsonList));
+  Future<void> upsertRule(AnimeRule rule) async {
+    final rules = await loadRules();
+    final index = rules.indexWhere((r) => r.id == rule.id);
+    if (index >= 0) {
+      rules[index] = rule;
+    } else {
+      rules.add(rule);
+    }
+    await saveRules(rules);
   }
 
-  Future<List<dynamic>> getHistory() async {
+  Future<void> deleteRule(String ruleId) async {
+    final rules = await loadRules();
+    rules.removeWhere((r) => r.id == ruleId);
+    await saveRules(rules);
+  }
+
+  // ================= 历史记录 =================
+  Future<void> saveHistory(List<dynamic> history) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_keyHistory, jsonEncode(history.map((e) {
+      try { return e.toJson(); } catch (_) { return e; }
+    }).toList()));
+  }
+
+  Future<List<dynamic>> loadHistory() async {
     final prefs = await SharedPreferences.getInstance();
     final str = prefs.getString(_keyHistory);
     if (str == null) return [];
-    try {
-      return jsonDecode(str);
-    } catch (e) {
-      return [];
-    }
+    try { return jsonDecode(str); } catch (_) { return []; }
   }
 
-  // ================= 清理数据 =================
-  Future<void> clearHistory() async {
+  // ================= 追番表 =================
+  Future<void> saveSchedules(List<dynamic> schedules) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_keyHistory);
+    await prefs.setString(_keySchedules, jsonEncode(schedules.map((e) {
+      try { return e.toJson(); } catch (_) { return e; }
+    }).toList()));
+  }
+
+  Future<List<dynamic>> loadSchedules() async {
+    final prefs = await SharedPreferences.getInstance();
+    final str = prefs.getString(_keySchedules);
+    if (str == null) return [];
+    try { return jsonDecode(str); } catch (_) { return []; }
   }
 }

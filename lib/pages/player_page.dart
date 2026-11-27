@@ -7,7 +7,8 @@ import '../models/rule.dart';
 class PlayerPage extends ConsumerStatefulWidget {
   final String videoUrl;
   final String? episodeUrl;
-  final String? title;          // ⚠️ 新增：兼容 detail_page 传入的 title
+  final String? title;          
+  final String? animeTitle;     // ⚠️ 新增：兼容 detail_page 传入的 animeTitle
   final String? episodeTitle;
   final AnimeRule? rule;
 
@@ -15,7 +16,8 @@ class PlayerPage extends ConsumerStatefulWidget {
     super.key, 
     required this.videoUrl, 
     this.episodeUrl,
-    this.title,                 // ⚠️ 新增
+    this.title,                 
+    this.animeTitle,            // ⚠️ 新增
     this.episodeTitle,
     this.rule,
   });

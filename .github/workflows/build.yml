@@ -47,7 +47,7 @@ jobs:
           fi
           rm -f AndroidManifest_backup.xml
 
-          # 4. 核心修复：升级 settings.gradle.kts 中的版本并注入镜像
+          # 4. 核心修复：注入 settings.gradle.kts 镜像及合适版本的 AGP/Kotlin
           cat << 'EOF' > android/settings.gradle.kts
           pluginManagement {
               val flutterSdkPath = run {
@@ -79,7 +79,7 @@ jobs:
           include(":app")
           EOF
 
-          # 5. 更新 Gradle Wrapper 版本至 9.3.1
+          # 5. 更新 Gradle Wrapper 版本
           sed -i 's/distributionUrl=.*/distributionUrl=https\\:\/\/services.gradle.org\/distributions\/gradle-9.3.1-bin.zip/' android/gradle/wrapper/gradle-wrapper.properties
 
           # 6. 关闭 AGP 9 的临时开关，避免与部分旧版插件冲突
@@ -88,6 +88,14 @@ jobs:
 
       - name: Flutter pub get
         run: flutter pub get
+
+      # 🔥 核心新增：修复 flutter_inappwebview 插件的 ProGuard 配置兼容问题
+      - name: Fix flutter_inappwebview ProGuard Compatibility
+        run: |
+          find ~/.pub-cache/hosted/pub.dev -path "*flutter_inappwebview*" -name "build.gradle" -type f | while read -r file; do
+            echo "Patching: $file"
+            sed -i "s/proguard-android\.txt/proguard-android-optimize.txt/g" "$file"
+          done
 
       - name: Build APK (With Retry)
         uses: nick-fields/retry@v3

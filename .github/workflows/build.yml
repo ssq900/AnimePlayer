@@ -47,7 +47,7 @@ jobs:
           fi
           rm -f AndroidManifest_backup.xml
 
-          # 4. 核心修复：直接在 settings.gradle.kts 中注入阿里云镜像
+          # 4. 核心修复：升级 settings.gradle.kts 中的版本并注入镜像
           cat << 'EOF' > android/settings.gradle.kts
           pluginManagement {
               val flutterSdkPath = run {
@@ -72,14 +72,19 @@ jobs:
           
           plugins {
               id("dev.flutter.flutter-plugin-loader") version "1.0.0"
-              id("com.android.application") version "8.9.1" apply false
-              id("org.jetbrains.kotlin.android") version "2.1.0" apply false
+              id("com.android.application") version "9.1.1" apply false
+              id("org.jetbrains.kotlin.android") version "2.4.10" apply false
           }
           
           include(":app")
           EOF
 
-      # ⚠️ 删掉了 Configure Gradle Mirror 步骤，直接用 settings.gradle.kts 里的配置
+          # 5. 更新 Gradle Wrapper 版本至 9.3.1
+          sed -i 's/distributionUrl=.*/distributionUrl=https\\:\/\/services.gradle.org\/distributions\/gradle-9.3.1-bin.zip/' android/gradle/wrapper/gradle-wrapper.properties
+
+          # 6. 关闭 AGP 9 的临时开关，避免与部分旧版插件冲突
+          echo "android.newDsl=false" >> android/gradle.properties
+          echo "android.builtInKotlin=false" >> android/gradle.properties
 
       - name: Flutter pub get
         run: flutter pub get

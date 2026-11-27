@@ -1,48 +1,64 @@
-# Anime Aggregator
+# Anime Aggregator (AnimePlayer)
 
-XPath（CSS selector）驱动的动漫聚合客户端。应用本身**不内置任何视频源或版权内容**，所有内容来自用户自行导入的规则所指向的外部网站。
+XPath（CSS selector / 原生 XPath）驱动的动漫聚合客户端。应用本身**不内置任何视频源或版权内容**，所有内容来自用户自行导入的规则所指向的外部网站。
 
 ## 最低系统要求
 
 **本应用最低支持 Android 7.0（API 24）。**
 
-- Flutter 版本锁定为 **3.35.0**（`environment.flutter: '>=3.35.0 <3.36.0'`）。
-- `android/app/build.gradle` 中 **显式硬编码 `minSdk = 24`**。
-- 所有直接 pub 依赖均已核对 minSdk ≤ 24，见下方依赖表。
+- Flutter 版本锁定为 **3.35.0**。
+- `android/app/build.gradle` 中 **显式硬编码 `minSdk = 24`**，并开启了 `desugar` 脱糖。
+- 所有核心依赖均已锁定精确版本，确保行为一致性。
 
-## 经过验证 minSdk ≤ 24 的依赖
+## ✨ 已实现的核心功能
 
-| 包 | 锁定版本 | Android minSdk 依据 |
-|---|---|---|
-| `http` | 1.2.2 | 纯 Dart 包，无原生代码 |
-| `html` | 0.15.4 | 纯 Dart 包，无原生代码 |
-| `shared_preferences` | 2.5.3 | 官方声明 SDK 24+ |
-| `path_provider` | 2.1.5 | 官方声明 SDK 24+ |
-| `url_launcher` | 6.3.1 | 最新 android impl 已剥离低版本代码，SDK 24+ |
-| `video_player` | 2.9.5 | ExoPlayer 回退兼容，官方声明 SDK 24+ |
-| `flutter_inappwebview` | 6.1.5 | 锁定版本，官方验证 SDK 24+ |
-| `flutter_local_notifications` | 18.0.1 | 锁定版本，配合脱糖支持 24+ |
-| `webdav_client` | 1.2.1 | 纯 Dart 网络库 |
-| `gbk_codec` | 0.4.0 | 纯 Dart 编解码 |
-| `synchronized` | 3.1.0+1 | 纯 Dart 并发锁 |
+### 🎬 播放器体验
+- **全屏手势控制**：左滑亮度、右滑音量、横滑快进快退、双击暂停、长按 2 倍速。
+- **断点续播**：自动记忆每集播放进度，下次打开无缝续播。
+- **智能跳过片头**：手动记录任意集数的 OP 结束点，下次播放自动弹出“跳过片头”按钮。
+- **外挂字幕支持**：支持导入 `.srt` / `.vtt` 格式字幕文件，完美叠加显示。
+- **内置网页媒体流嗅探**：遇到无法解析直链的源，自动加载内置 WebView，并拦截嗅探真正的 `.m3u8` / `.mp4` 媒体流，无缝接管内置播放器（附带 Cookie 穿透防盗链）。
+- **一键换源**：当源解析失败或播放卡顿时，一键去其他源找同名番剧。
+- **DLNA 投屏**：支持局域网搜索电视设备，一键推送视频流。
 
-> `sqflite` **未使用**。规则存储走 JSON 文件 + `path_provider`，完全绕开原生 SQLite 依赖，避免 sqflite_android 版本线中 minSdk 声明抖动带来的构建风险。
+### 💬 弹幕系统
+- **本地弹幕引擎**：支持发送弹幕、根据时间轴渲染飘屏。
+- **弹幕导入**：支持导入 JSON 格式的弹幕文件。
+- **高能进度条**：基于弹幕密度的高斯平滑算法，在进度条上绘制“高能波峰”。
+- **弹幕设置**：支持关键词屏蔽、透明度调节。
 
-## Android 7.0（API 24）已知限制
+### 📚 聚合与发现
+- **多源并发聚合搜索**：输入关键词，并发向多个源发起请求，实时合并结果，并显示每个源的搜索状态（错误面板）。
+- **原生 XPath 解析**：彻底废弃 CSS 转换，直接使用底层 `xml` 包解析 Kazumi 规则，支持 `contains` 模糊匹配，容错率极高。
+- **规则订阅与调试**：支持一键从 Kazumi 官方仓库拉取最新规则；内置“规则调试器”供高级用户实时验证选择器。
 
-1. **TLS / WebView 版本**：Android 7 设备的系统 WebView 可能停留在较旧版本（Chrome 51–70 区间），部分现代动漫源使用 TLS 1.3 或较新的 cipher suite，可能导致请求在 TLS 握手阶段失败。部分源在 API 24 设备上无法解析属于已知风险。
-2. **`video_player` 与 HLS**：`video_player` 在 Android 上底层是 ExoPlayer。API 24 下 HLS（`.m3u8`）的支持取决于流本身的编码参数。部分 fMP4 + 特定加密的 HLS 流可能在旧设备上无法播放，此时会回退到“外部打开”路径。
-3. **`android:usesCleartextTraffic="true"`**：为了兼容仍使用 HTTP 的老旧源而开启。如果你只使用 HTTPS 源，建议移除。
-4. **CSS selector 而非完整 XPath**：v1 规则编辑器接收的是 CSS selector。从 Kazumi 的 XPath 规则迁移时，需要把 `//div[@class="x"]` 手动转换为 `.x`。包含绝对数字索引（如 `div[2]`）的 XPath 会被转换器拦截，需手动精简。
+### 📊 管理与同步
+- **追番日历**：长按历史记录加入日历，支持每周更新提醒（基于本地通知）。
+- **观看统计**：生成你的“本周电子榨菜报告”。
+- **WebDAV 云同步**：原子级数据备份与恢复（规则、历史、日历），保证数据一致性。
+- **代理友好**：支持读取系统环境变量中的代理（含 `no_proxy` 匹配），并输出诊断日志。
 
-## 在 Termux 中本地构建（概要）
+## 如何编写第一条规则
 
-- 使用 `proot-distro` 登录 Debian，**不要在 Termux 原生 shell 中直接跑 Flutter Android 构建**。
-- Flutter 固定克隆到 `/opt/flutter` 并 checkout `3.35.0`。
-- 安装 `openjdk-17-jdk` 以及 Android cmdline-tools。
-- 本地构建命令：
-  ```bash
-  flutter pub get
-  flutter analyze
-  flutter test
-  flutter build apk --release
+1. 打开目标网站搜索页，按 F12 开发者工具。
+2. 找到搜索结果列表的容器元素（如 `<div class="result-list">`），填入 **搜索结果容器选择器**：`.result-list`。
+3. 容器内番剧是一个 `<a class="item">`，填入 **番剧条目选择器**：`.item`。
+4. 进入详情页，找到剧集列表（如 `<div class="episode-list"><a href="...">`），填入 **剧集列表选择器**：`.episode-list a`。
+5. 进入播放页，找到视频标签或播放按钮，填入 **剧集链接选择器**：`video source, a.play-btn`。
+6. `baseUrl` 填写搜索页模板，如 `https://example.com/search?q={keyword}`。
+
+*(注：本应用同时支持原生的 Kazumi XPath 规则导入，无需手动转换。)*
+
+## Roadmap (未来计划)
+
+- [ ] **Anime4K 实时超分辨率**（针对低清源画质提升）
+- [ ] **硬件加速开关**（提供省电/流畅/画质三档切换）
+- [ ] **在线弹幕源接入**（如弹弹play API）
+- [ ] **规则市场**（支持二维码/链接分享规则）
+- [ ] **一起看**（多设备同步播放进度）
+
+## ⚠️ 风险与限制提醒
+
+1. **Android 7.0 限制**：旧设备的系统 WebView 内核可能过旧，导致部分现代源网站的 TLS 握手失败。App 会在加载失败时给出明确提示。
+2. **HLS 编码兼容**：部分 fMP4 编码或带 DRM 加密的 HLS 流在旧设备的硬件解码器上可能无法播放。此时会自动回退至网页模式，并提供“外部播放器打开”选项。
+3. **明文流量**：为了防止中间人攻击，本项目的最新构建脚本已移除全局 `usesCleartextTraffic="true"` 配置。如果使用纯 HTTP 源，可能会被系统拦截。

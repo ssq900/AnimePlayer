@@ -11,28 +11,34 @@ dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.8
+  
+  # 网络请求与解析
   http: ^1.2.2
   html: ^0.15.4
+  xml: ^6.5.0
+  
+  # 存储与本地配置
   shared_preferences: ^2.5.3
   path_provider: ^2.1.5
-  url_launcher: ^6.3.1
-  video_player: ^2.9.5
-  gbk_codec: ^0.4.0
-  flutter_inappwebview: ^6.1.5
-  flutter_local_notifications: ^18.0.1
   webdav_client: ^1.2.1
   synchronized: ^3.1.0+1
+  
+  # 核心插件（已锁定精确版本，防止行为漂移）
+  video_player: 2.9.5
+  flutter_inappwebview: 6.1.5
+  url_launcher: ^6.3.1
   file_picker: ^8.0.0+1
   share_plus: ^10.1.1
+  flutter_local_notifications: ^18.0.1
   
+  # 进阶功能（语音、投屏、系统控制）
   speech_to_text: ^7.0.0
-  dlna_dart: ^0.1.2
-  
+  dlna_dart: 0.1.2
   screen_brightness: ^2.0.0
   volume_controller: ^3.3.0
-
-  # 仅依赖 xml 处理 XPath
-  xml: ^6.5.0
+  
+  # 编解码
+  gbk_codec: ^0.4.0
 
 dev_dependencies:
   flutter_test:

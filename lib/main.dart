@@ -6,16 +6,14 @@ import 'services/storage_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
-  // 1. 初始化存储服务，清理上次意外退出残留的 .tmp 文件
-  await StorageService().init();
-
-  // 2. 初始化本地通知插件
+  
+  // 初始化通知与清理临时文件
   await NotificationService.init();
-
-  // 3. 挂载全局代理与网络安全拦截
+  await StorageService().init();
+  
+  // 全局代理拦截（注：这会接管所有 HttpClient 请求，包括 video_player 的视频流）
   HttpOverrides.global = _MyHttpOverrides();
-
+  
   runApp(const AnimeApp());
 }
 
@@ -28,7 +26,7 @@ class _MyHttpOverrides extends HttpOverrides {
         final port = uri.port;
         final noProxy = Platform.environment['no_proxy'] ?? Platform.environment['NO_PROXY'];
 
-        // 检查 no_proxy 白名单
+        // no_proxy 匹配
         if (noProxy != null && noProxy.isNotEmpty) {
           final domains = noProxy.split(',');
           for (var d in domains) {
@@ -53,20 +51,19 @@ class _MyHttpOverrides extends HttpOverrides {
           }
         }
 
-        // 读取系统环境变量中的代理设置
-        final envProxy = Platform.environment['https_proxy'] ?? 
-                         Platform.environment['http_proxy'] ?? 
-                         Platform.environment['HTTP_PROXY'];
-                         
+        // 代理提取
+        final envProxy = Platform.environment['https_proxy'] ?? Platform.environment['http_proxy'] ?? Platform.environment['HTTP_PROXY'];
         if (envProxy != null && envProxy.isNotEmpty) {
           try {
-            // 使用 Uri 解析，避免字符串截取出错，同时保留鉴权信息
             final pUri = Uri.parse(envProxy.contains('://') ? envProxy : 'http://$envProxy');
             final proxyHost = pUri.host;
             final proxyPort = pUri.hasPort ? pUri.port : 8080;
             final auth = pUri.userInfo.isNotEmpty ? '${pUri.userInfo}@' : '';
+            // 核心改进：增加代理命中日志，方便用户排查
+            debugPrint('[Proxy] Routing $host:$port via $auth$proxyHost:$proxyPort');
             return 'PROXY $auth$proxyHost:$proxyPort';
           } catch (_) {
+            debugPrint('[Proxy] Failed to parse proxy string: $envProxy');
             return 'DIRECT';
           }
         }
@@ -84,8 +81,9 @@ class AnimeApp extends StatelessWidget {
       title: 'AnimePlayer',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorSchemeSeed: Colors.deepPurple, 
+        colorSchemeSeed: Colors.deepPurple,
         useMaterial3: true,
+        brightness: Brightness.dark, // 核心 UI 改进：全局默认暗色模式，适配看番场景
       ),
       home: const MainLayout(),
     );

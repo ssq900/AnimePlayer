@@ -103,6 +103,7 @@ class _HomePageState extends State<HomePage> {
     });
     FocusScope.of(context).unfocus();
 
+    // 保存搜索历史
     final prefs = await SharedPreferences.getInstance();
     final history = prefs.getStringList('search_history') ?? [];
     history.removeWhere((h) => h.toLowerCase().trim() == text);
@@ -111,6 +112,7 @@ class _HomePageState extends State<HomePage> {
     await prefs.setStringList('search_history', history);
     if (mounted) setState(() => _searchHistory = history);
 
+    // 多源并发搜索控制
     const int maxConcurrent = 3;
     int activeTasks = 0;
     int completedTasks = 0;
@@ -160,6 +162,7 @@ class _HomePageState extends State<HomePage> {
       appBar: AppBar(title: const Text('全网聚合搜索')),
       body: Column(
         children: [
+          // 搜索栏
           Padding(
             padding: const EdgeInsets.all(16),
             child: TextField(
@@ -187,21 +190,22 @@ class _HomePageState extends State<HomePage> {
           
           if (_isSearching) const LinearProgressIndicator(),
           
-          // 统一错误反馈面板（橙色提示）
+          // 错误聚合面板
           if (_searchErrors.isNotEmpty)
             Card(
               margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              color: Colors.orange.shade50,
+              color: Colors.orange.shade900.withOpacity(0.3),
               child: ExpansionTile(
-                title: Text('有 ${_searchErrors.length} 个源搜索失败', style: const TextStyle(color: Colors.orange, fontSize: 14)),
+                title: Text('有 ${_searchErrors.length} 个源搜索失败', style: const TextStyle(color: Colors.orangeAccent, fontSize: 14)),
                 initiallyExpanded: false,
                 children: _searchErrors.map((e) => ListTile(
-                  title: Text(e, style: const TextStyle(fontSize: 12)),
+                  title: Text(e, style: const TextStyle(fontSize: 12, color: Colors.white70)),
                   dense: true,
                 )).toList(),
               ),
             ),
           
+          // 搜索历史
           if (_searchHistory.isNotEmpty && _results.isEmpty && !_isSearching)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -216,17 +220,22 @@ class _HomePageState extends State<HomePage> {
           if (_searchHistory.isNotEmpty && _results.isEmpty && !_isSearching)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Wrap(
-                spacing: 8,
-                children: _searchHistory.map((h) => ActionChip(
-                  label: Text(h),
-                  onPressed: () => _startSearch(h),
-                )).toList(),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: _searchHistory.map((h) => ActionChip(
+                    label: Text(h),
+                    onPressed: () => _startSearch(h),
+                  )).toList(),
+                ),
               ),
             ),
 
           if (_error != null) Expanded(child: Center(child: Text('搜索失败: $_error'))),
 
+          // 搜索结果列表
           if (_results.isNotEmpty)
             Expanded(
               child: ListView.separated(
@@ -251,8 +260,37 @@ class _HomePageState extends State<HomePage> {
               ),
             ),
             
+          // 核心：空状态引导（包含无规则时的提示）
           if (!_isSearching && _results.isEmpty && _error == null && _searchHistory.isEmpty && _searchErrors.isEmpty)
-            const Expanded(child: Center(child: Text('输入关键词开始搜索吧！', style: TextStyle(color: Colors.grey)))),
+            Expanded(
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.search_off, size: 64, color: Colors.grey.withOpacity(0.5)),
+                    const SizedBox(height: 16),
+                    const Text('输入关键词开始搜索吧！', style: TextStyle(color: Colors.grey, fontSize: 16)),
+                    if (_rules.isEmpty) ...[
+                      const SizedBox(height: 24),
+                      const Text('检测到您还没有导入任何规则', style: TextStyle(color: Colors.orangeAccent, fontSize: 14)),
+                      const SizedBox(height: 12),
+                      FilledButton.icon(
+                        icon: const Icon(Icons.cloud_download),
+                        label: const Text('去设置中拉取规则'),
+                        onPressed: () {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('请点击底部“我的” -> “设置”进行规则管理'),
+                              duration: Duration(seconds: 3),
+                            ),
+                          );
+                        },
+                      )
+                    ]
+                  ],
+                ),
+              ),
+            ),
         ],
       ),
     );

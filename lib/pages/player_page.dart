@@ -4,9 +4,8 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
-import 'package:flutter/widgets.dart';
 import 'package:flutter/rendering.dart';
-import 'package:flutter/services.dart'; // 引入 PlatformException
+import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:path_provider/path_provider.dart';
@@ -15,7 +14,7 @@ import 'package:video_player/video_player.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:volume_controller/volume_controller.dart';
-import 'package:dlna_dart/dlna.dart'; 
+import 'package:dlna_dart/dlna.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import '../models/rule.dart';
 import '../services/xpath_service.dart';
@@ -236,26 +235,26 @@ class _PlayerPageState extends State<PlayerPage> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _error = '媒体流解析失败：可能受 DRM 保护或需要高级鉴权。\n($e)';
+          _error = '媒体流解析失败：可能受 DRM 保护或设备解码器不支持。\n($e)';
           _loading = false;
           _isWebViewMode = true;
         });
         
-        // 核心修复：区分错误类型，如果是底层编码不支持，弹窗提示
-        if (e is PlatformException) {
-          _showFallbackDialog(_resolvedUrl!);
+        // 核心机制：HLS流解析失败回退弹窗
+        if (e is PlatformException || e.toString().contains('Unrecognized') || e.toString().contains('Codec')) {
+          _showFallbackDialog(_resolvedUrl ?? url, e.toString());
         }
       }
     }
   }
 
-  // 核心修复：外部播放器降级弹窗
-  void _showFallbackDialog(String url) {
+  // 核心功能：外部播放器降级诊断弹窗
+  void _showFallbackDialog(String url, String errorReason) {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('播放失败'),
-        content: const Text('当前设备的硬件解码器不支持该视频格式（或 HLS 切片加密过深）。是否尝试使用外部播放器打开？'),
+        title: const Text('无法使用内置播放器播放'),
+        content: Text('诊断信息：$errorReason\n\n当前设备的硬件解码器不支持该视频格式，或者该流受 DRM 保护。\n是否尝试用外部播放器打开？'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
           FilledButton(
@@ -402,6 +401,7 @@ class _PlayerPageState extends State<PlayerPage> {
     return null;
   }
 
+  // 手势控制
   void _onDoubleTap() { if (_controller == null) return; if (_controller!.value.isPlaying) { _controller!.pause(); _showTip('暂停'); } else { _controller!.play(); _showTip('播放'); } }
   void _onLongPressStart(LongPressStartDetails details) { if (_controller == null) return; _controller!.setPlaybackSpeed(2.0); _showTip('2x 倍速中'); }
   void _onLongPressEnd(LongPressEndDetails details) { if (_controller == null) return; _controller!.setPlaybackSpeed(_playbackSpeed); setState(() => _gestureTip = null); _gestureTipTimer?.cancel(); }
@@ -447,6 +447,7 @@ class _PlayerPageState extends State<PlayerPage> {
   }
   void _onVerticalDragEnd(DragEndDetails details) { _isDragging = false; _gestureTipTimer?.cancel(); setState(() => _gestureTip = null); }
 
+  // 投屏
   Future<void> _castToDevice() async {
     if (_resolvedUrl == null) return;
     showDialog(context: context, barrierDismissible: false, builder: (_) => const Center(child: CircularProgressIndicator()));
@@ -499,6 +500,7 @@ class _PlayerPageState extends State<PlayerPage> {
     }
   }
 
+  // OP / 弹幕 / 播放速度
   Future<void> _markOpEnd() async {
     if (_controller == null) return;
     final current = _controller!.value.position;
@@ -641,11 +643,11 @@ class _PlayerPageState extends State<PlayerPage> {
     if (_controller != null && _controller!.value.isInitialized) {
        SharedPreferences.getInstance().then((prefs) => prefs.setInt(_progressKey, _controller!.value.position.inMilliseconds));
     }
+    
     _controller?.removeListener(() {}); 
     _controller?.dispose(); 
-    _controller = null;
+    _controller = null; // 核心修复：显式置空，避免 State 回收后 VideoPlayer 仍在后台绘制
     
-    // 恢复系统默认亮度
     ScreenBrightness().resetScreenBrightness();
     super.dispose();
   }

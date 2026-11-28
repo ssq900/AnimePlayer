@@ -56,13 +56,15 @@ jobs:
               includeBuild("$flutterSdkPath/packages/flutter_tools/gradle")
               
               repositories {
-                  maven { url = uri("https://maven.aliyun.com/repository/public") }
-                  maven { url = uri("https://maven.aliyun.com/repository/google") }
-                  maven { url = uri("https://maven.aliyun.com/repository/gradle-plugin") }
-                  maven { url = uri("https://storage.googleapis.com/download.flutter.io") }
+                  // ⚠️ 官方源优先，防止国内镜像 502 导致拉取失败
                   google()
                   mavenCentral()
                   gradlePluginPortal()
+                  maven { url = uri("https://storage.googleapis.com/download.flutter.io") }
+                  // 阿里云镜像放后面兜底
+                  maven { url = uri("https://maven.aliyun.com/repository/public") }
+                  maven { url = uri("https://maven.aliyun.com/repository/google") }
+                  maven { url = uri("https://maven.aliyun.com/repository/gradle-plugin") }
               }
           }
           
@@ -120,14 +122,11 @@ jobs:
       - name: Flutter pub get
         run: flutter pub get
 
-      # 🔥 暴力替换 file_picker 的 compileSdk
       - name: Force Upgrade file_picker compileSdk
         run: |
           find ~/.pub-cache/hosted/pub.dev -path "*file_picker*/android/build.gradle" -type f | while read -r file; do
             echo "Patching: $file"
-            # 直接把包含 compileSdk 的行全部替换为 36，不管它是空格还是等号
             sed -i '/compileSdk/ s/.*/        compileSdkVersion 36/' "$file"
-            # 如果是 Kotlin DSL 格式
             sed -i '/compileSdk/ s/.*/        compileSdk = 36/' "$file"
           done
           echo "✅ file_picker 插件的 compileSdk 已被强制覆盖"
@@ -144,7 +143,6 @@ jobs:
         with:
           timeout_minutes: 20
           max_attempts: 3
-          # 🔥 加上跳过 AAR 校验的参数
           command: flutter build apk --release --android-skip-build-dependency-validation
 
       - name: Upload APK Artifact

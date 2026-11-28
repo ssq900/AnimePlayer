@@ -24,7 +24,6 @@ class XPathService {
       
       if (resp.statusCode == 200) {
         final body = utf8.decode(resp.bodyBytes, allowMalformed: true);
-        // 如果网页包含 Cloudflare 挑战或体积太小，则视为拦截，降级到 WebView
         if (!body.contains('cf-browser-verification') && body.length > 1000) {
           return body;
         }
@@ -33,7 +32,7 @@ class XPathService {
       debugPrint('[XPathService] HTTP probe failed, falling back to WebView: $e');
     }
 
-    // 2. 降级到 Headless WebView (针对动态渲染或防爬盾)
+    // 2. 降级到 Headless WebView
     final completer = Completer<String>();
     HeadlessInAppWebView? webView;
     bool isDisposed = false;
@@ -49,7 +48,6 @@ class XPathService {
           if (completer.isCompleted) return;
           try {
             if (waitForSelector != null && waitForSelector.isNotEmpty) {
-              // 这里如果是要等待 CSS 选择器，做一下兼容处理
               final safeSelector = jsonEncode(waitForSelector.startsWith('//') ? 'body' : waitForSelector);
               for (int i = 0; i < 10; i++) { 
                 if (completer.isCompleted) return;
@@ -87,7 +85,6 @@ class XPathService {
     }
   }
 
-  // 🔥 核心保留：严谨的 HTML 清洗
   String _cleanHtmlForXml(String html) {
     try {
       String cleaned = html;
@@ -120,14 +117,23 @@ class XPathService {
     }
   }
 
-  // 🔥 核心保留：XPath 容错化（模糊匹配 class）
-  String _normalizeXpath(String xpath) {
-    String res = xpath.trim();
-    if (!res.startsWith('//') && !res.startsWith('/') && !res.startsWith('./')) res = '//$res';
-    final reg = RegExp(r"""\[@class\s*=\s*['"]([^'"]+)['"]\]""");
-    res = res.replaceAllMapped(reg, (m) => "[contains(@class, '${m.group(1)!.trim()}')]");
-    return res;
+  // ==========================================
+  // 🔥 补全给 DebuggerPage 用的公开方法
+  // ==========================================
+  xml.XmlDocument parseHtml(String html) {
+    return xml.XmlDocument.parse(_cleanHtmlForXml(html));
   }
+
+  List<xml.XmlElement> findElements(xml.XmlNode context, String expr) {
+    if (expr.trim().isEmpty) return const [];
+    try {
+      // xml 包的 findAllElements 支持简单的 tag 和 class 匹配
+      return context.findAllElements(expr).toList();
+    } catch (e) {
+      throw ParseException('XPath "$expr" 执行失败: $e');
+    }
+  }
+  // ==========================================
 
   Future<List<SearchResult>> search(AnimeRule rule, String keyword) async {
     if (rule.searchSelector.trim().isEmpty) throw ParseException('规则错误: 搜索结果容器选择器为空');
@@ -138,9 +144,8 @@ class XPathService {
 
     final rawHtml = await fetchHtml(searchUrl);
     try {
-      final document = xml.XmlDocument.parse(_cleanHtmlForXml(rawHtml));
+      final document = parseHtml(rawHtml);
       
-      // 修复：使用标准的 findAllElements 替代已经不支持的 xpath 扩展
       final containerNodes = document.findAllElements(rule.searchSelector).toList();
       if (containerNodes.isEmpty) throw ParseException('未找到搜索容器 "${rule.searchSelector}"');
 
@@ -154,7 +159,7 @@ class XPathService {
 
       return items.map((el) {
         final href = el.getAttribute('href') ?? el.getAttribute('src') ?? '';
-        // 修复：使用 descendants 提取文本替代不支持的 innerText
+        // 修复：使用 descendants 提取文本
         final title = el.descendants.whereType<xml.XmlText>().map((n) => n.value).join().replaceAll(RegExp(r'\s+'), ' ').trim();
         
         if (el.name.local != 'a' && href.isEmpty) {
@@ -186,7 +191,7 @@ class XPathService {
     if (rule.episodeListSelector.trim().isEmpty) throw ParseException('剧集列表选择器为空');
     final rawHtml = await fetchHtml(detailUrl);
     try {
-      final document = xml.XmlDocument.parse(_cleanHtmlForXml(rawHtml));
+      final document = parseHtml(rawHtml);
       final nodes = document.findAllElements(rule.episodeListSelector).toList();
       
       if (nodes.isEmpty) throw ParseException('未找到剧集列表，可能规则失效');
@@ -204,7 +209,7 @@ class XPathService {
     if (rule.episodeLinkSelector.trim().isEmpty) return episodeUrl;
     final rawHtml = await fetchHtml(episodeUrl);
     try {
-      final document = xml.XmlDocument.parse(_cleanHtmlForXml(rawHtml));
+      final document = parseHtml(rawHtml);
       final el = document.findAllElements(rule.episodeLinkSelector).firstOrNull;
       if (el == null) throw ParseException('未找到视频播放地址');
       final href = el.getAttribute('href') ?? el.getAttribute('src') ?? '';

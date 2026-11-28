@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/rule.dart';
 import '../models/playback_record.dart';
@@ -22,35 +23,58 @@ class StorageService {
     final prefs = await SharedPreferences.getInstance();
     final str = prefs.getString(_keyRules);
     if (str == null) return [];
+    
     try {
       final List<dynamic> jsonList = jsonDecode(str);
-      final rules = jsonList.map((e) => AnimeRule.fromJson(e)).toList();
-      return rules.map((r) {
-        if (!r.isCssBased && r.searchSelector.isNotEmpty) return RuleMigrator.migrateToCss(r);
+      final rules = jsonList.map((e) => AnimeRule.fromJson(e as Map<String, dynamic>)).toList();
+      
+      // 🔥 尝试平滑迁移到 CSS，并单独 catch 防止一条规则报错拖垮整个列表
+      final migratedRules = rules.map((r) {
+        try {
+          if (!r.isCssBased && r.searchSelector.isNotEmpty) {
+            return RuleMigrator.migrateToCss(r);
+          }
+        } catch (e) {
+          debugPrint('[StorageService] 规则迁移失败 (ID: ${r.id}): $e');
+        }
         return r;
       }).toList();
-    } catch (e) {
+
+      return migratedRules;
+    } catch (e, stack) {
+      // 🔥 核心修复：打印出真实的 JSON 解析报错，绝不静默吞掉
+      debugPrint('[StorageService] 解析规则失败: $e\n$stack');
       return [];
     }
   }
 
   Future<bool> upsertRule(AnimeRule rule) async {
-    final rules = await loadRules();
-    final index = rules.indexWhere((r) => r.id == rule.id);
-    if (index >= 0) {
-      rules[index] = rule;
-    } else {
-      rules.add(rule);
+    try {
+      final rules = await loadRules();
+      final index = rules.indexWhere((r) => r.id == rule.id);
+      if (index >= 0) {
+        rules[index] = rule;
+      } else {
+        rules.add(rule);
+      }
+      await saveRules(rules);
+      return true;
+    } catch (e) {
+      debugPrint('[StorageService] upsertRule 失败: $e');
+      return false;
     }
-    await saveRules(rules);
-    return true;
   }
 
   Future<bool> deleteRule(String ruleId) async {
-    final rules = await loadRules();
-    rules.removeWhere((r) => r.id == ruleId);
-    await saveRules(rules);
-    return true;
+    try {
+      final rules = await loadRules();
+      rules.removeWhere((r) => r.id == ruleId);
+      await saveRules(rules);
+      return true;
+    } catch (e) {
+      debugPrint('[StorageService] deleteRule 失败: $e');
+      return false;
+    }
   }
 
   // ================= 新版播放记录 (PlaybackRecord) =================
@@ -60,8 +84,9 @@ class StorageService {
     if (str == null) return [];
     try {
       final List<dynamic> jsonList = jsonDecode(str);
-      return jsonList.map((e) => PlaybackRecord.fromJson(e)).toList();
-    } catch (_) {
+      return jsonList.map((e) => PlaybackRecord.fromJson(e as Map<String, dynamic>)).toList();
+    } catch (e) {
+      debugPrint('[StorageService] 解析播放记录失败: $e');
       return [];
     }
   }
@@ -75,14 +100,18 @@ class StorageService {
 
   // 插入或更新一条记录（以 URL 为唯一基准）
   Future<void> upsertPlaybackRecord(PlaybackRecord newRecord) async {
-    final records = await loadPlaybackRecords();
-    final index = records.indexWhere((r) => r.url == newRecord.url);
-    if (index >= 0) {
-      records[index] = newRecord;
-    } else {
-      records.add(newRecord);
+    try {
+      final records = await loadPlaybackRecords();
+      final index = records.indexWhere((r) => r.url == newRecord.url);
+      if (index >= 0) {
+        records[index] = newRecord;
+      } else {
+        records.add(newRecord);
+      }
+      await savePlaybackRecords(records);
+    } catch (e) {
+      debugPrint('[StorageService] upsertPlaybackRecord 失败: $e');
     }
-    await savePlaybackRecords(records);
   }
 
   // 获取单条播放记录（用于断点续播）
@@ -107,8 +136,9 @@ class StorageService {
     if (str == null) return [];
     try {
       final List<dynamic> jsonList = jsonDecode(str);
-      return jsonList.map((e) => HistoryItem.fromJson(e)).toList();
-    } catch (_) {
+      return jsonList.map((e) => HistoryItem.fromJson(e as Map<String, dynamic>)).toList();
+    } catch (e) {
+      debugPrint('[StorageService] 解析历史记录失败: $e');
       return [];
     }
   }
@@ -125,8 +155,9 @@ class StorageService {
     if (str == null) return [];
     try {
       final List<dynamic> jsonList = jsonDecode(str);
-      return jsonList.map((e) => ScheduleItem.fromJson(e)).toList();
-    } catch (_) {
+      return jsonList.map((e) => ScheduleItem.fromJson(e as Map<String, dynamic>)).toList();
+    } catch (e) {
+      debugPrint('[StorageService] 解析追番表失败: $e');
       return [];
     }
   }

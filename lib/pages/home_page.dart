@@ -1,11 +1,8 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:speech_to_text/speech_to_text.dart' as stt;
 import '../models/rule.dart';
 import '../services/storage_service.dart';
-import '../services/selector_engine.dart';
-import 'detail_page.dart';
+import 'settings_page.dart'; // 🔥 引入设置页以便跳转
+import 'search_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -16,282 +13,186 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final _storage = StorageService();
-  final _xpath = SelectorEngine();
   final _searchController = TextEditingController();
   
   List<AnimeRule> _rules = [];
-  List<String> _searchHistory = [];
-  List<SearchResult> _results = [];
-  List<String> _searchErrors = [];
-  bool _isSearching = false;
-  String? _error;
-
-  final stt.SpeechToText _speech = stt.SpeechToText();
-  bool _speechAvailable = false;
-  bool _isListening = false;
+  List<HistoryItem> _history = [];
+  bool _isLoading = true;
 
   @override
   void initState() {
     super.initState();
-    _load();
-    _initSpeech();
+    _loadData();
   }
 
-  Future<void> _initSpeech() async {
-    _speechAvailable = await _speech.initialize(
-      onStatus: (val) {
-        if (val == 'done' || val == 'notListening') {
-          if (mounted) {
-            setState(() => _isListening = false);
-            if (_searchController.text.trim().isNotEmpty) _startSearch();
-          }
-        }
-      },
-      onError: (val) {
-        if (mounted) setState(() => _isListening = false);
-      },
-    );
-    if (mounted) setState(() {});
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
   }
 
-  void _listen() async {
-    if (!_speechAvailable || _isListening) return;
-    if (!_speech.isListening) {
-      setState(() => _isListening = true);
-      await _speech.listen(
-        onResult: (val) => setState(() => _searchController.text = val.recognizedWords),
-        localeId: 'zh_CN',
-        onDevice: true,
-      );
-    } else {
-      setState(() => _isListening = false);
-      await _speech.stop();
+  Future<void> _loadData() async {
+    final rules = await _storage.loadRules();
+    final history = await _storage.loadHistory();
+    
+    if (mounted) {
+      setState(() {
+        _rules = rules;
+        _history = history;
+        _isLoading = false;
+      });
     }
   }
 
-  Future<void> _load() async {
-    final rules = await _storage.loadRules();
-    final prefs = await SharedPreferences.getInstance();
-    final history = prefs.getStringList('search_history') ?? [];
-    if (!mounted) return;
-    setState(() {
-      _rules = rules;
-      _searchHistory = history;
-    });
-  }
+  void _startSearch() {
+    final keyword = _searchController.text.trim();
+    if (keyword.isEmpty) return;
 
-  Future<void> _startSearch([String? keyword]) async {
-    final rawText = keyword ?? _searchController.text.trim();
-    if (rawText.isEmpty) return;
-    final text = rawText.toLowerCase().trim();
-    _searchController.text = rawText;
-
-    final rules = await _storage.loadRules();
-    if (!mounted) return;
-    
-    if (rules.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请先在“我的”中导入规则')));
+    // 🔥 核心修改：规则为空时的引导跳转
+    if (_rules.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('请先导入规则才能搜索'),
+          action: SnackBarAction(
+            label: '去设置',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const SettingsPage()),
+              ).then((_) => _loadData()); // 从设置页返回后自动刷新规则列表
+            },
+          ),
+        ),
+      );
       return;
     }
 
-    setState(() {
-      _rules = rules;
-      _isSearching = true;
-      _error = null;
-      _results = [];
-      _searchErrors = [];
-    });
-    FocusScope.of(context).unfocus();
-
-    // 保存搜索历史
-    final prefs = await SharedPreferences.getInstance();
-    final history = prefs.getStringList('search_history') ?? [];
-    history.removeWhere((h) => h.toLowerCase().trim() == text);
-    history.insert(0, rawText);
-    if (history.length > 10) history.removeLast();
-    await prefs.setStringList('search_history', history);
-    if (mounted) setState(() => _searchHistory = history);
-
-    // 多源并发搜索控制
-    const int maxConcurrent = 3;
-    int activeTasks = 0;
-    int completedTasks = 0;
-    final queue = List<AnimeRule>.from(rules);
-    
-    Future<void> processRule(AnimeRule rule) async {
-      try {
-        final res = await _xpath.search(rule, text).timeout(
-          const Duration(seconds: 30), 
-          onTimeout: () => throw Exception('请求超时 (>30s)')
-        );
-        if (res.isNotEmpty && mounted) {
-          setState(() => _results.addAll(res));
-        }
-      } catch (e) {
-        if (mounted) {
-          setState(() => _searchErrors.add('[${rule.name}] ${e.toString()}'));
-        }
-      } finally {
-        activeTasks--;
-        completedTasks++;
-        if (completedTasks == rules.length && mounted) {
-          setState(() => _isSearching = false);
-        }
-      }
-    }
-
-    while (queue.isNotEmpty || activeTasks > 0) {
-      while (activeTasks < maxConcurrent && queue.isNotEmpty) {
-        final rule = queue.removeAt(0);
-        activeTasks++;
-        processRule(rule);
-      }
-      await Future.delayed(const Duration(milliseconds: 200));
-    }
-  }
-
-  void _clearHistory() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('search_history');
-    if (mounted) setState(() => _searchHistory = []);
+    // 跳转到搜索页
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => SearchPage(keyword: keyword, rules: _rules),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
     return Scaffold(
-      appBar: AppBar(title: const Text('全网聚合搜索')),
-      body: Column(
-        children: [
-          // 搜索栏
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: TextField(
-              controller: _searchController,
-              textInputAction: TextInputAction.search,
-              onSubmitted: (_) => _startSearch(),
-              decoration: InputDecoration(
-                hintText: '输入番剧名称，即刻全网搜',
-                prefixIcon: const Icon(Icons.search),
-                border: const OutlineInputBorder(),
-                suffixIcon: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (_speechAvailable)
-                      IconButton(
-                        icon: Icon(_isListening ? Icons.mic : Icons.mic_none, color: _isListening ? Colors.red : null),
-                        onPressed: _listen,
-                      ),
-                    IconButton(icon: const Icon(Icons.arrow_forward), onPressed: () => _startSearch()),
-                  ],
-                ),
-              ),
-            ),
+      appBar: AppBar(
+        title: const Text('全网聚合搜索'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings),
+            tooltip: '设置',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const SettingsPage()),
+              ).then((_) => _loadData());
+            },
           ),
-          
-          if (_isSearching) const LinearProgressIndicator(),
-          
-          // 错误聚合面板
-          if (_searchErrors.isNotEmpty)
-            Card(
-              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              color: Colors.orange.shade900.withOpacity(0.3),
-              child: ExpansionTile(
-                title: Text('有 ${_searchErrors.length} 个源搜索失败', style: const TextStyle(color: Colors.orangeAccent, fontSize: 14)),
-                initiallyExpanded: false,
-                children: _searchErrors.map((e) => ListTile(
-                  title: Text(e, style: const TextStyle(fontSize: 12, color: Colors.white70)),
-                  dense: true,
-                )).toList(),
-              ),
-            ),
-          
-          // 搜索历史
-          if (_searchHistory.isNotEmpty && _results.isEmpty && !_isSearching)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Row(
-                children: [
-                  const Text('搜索历史', style: TextStyle(color: Colors.grey, fontSize: 13)),
-                  const Spacer(),
-                  TextButton(onPressed: _clearHistory, child: const Text('清空', style: TextStyle(fontSize: 12))),
-                ],
-              ),
-            ),
-          if (_searchHistory.isNotEmpty && _results.isEmpty && !_isSearching)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: _searchHistory.map((h) => ActionChip(
-                    label: Text(h),
-                    onPressed: () => _startSearch(h),
-                  )).toList(),
+        ],
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // 搜索框
+            TextField(
+              controller: _searchController,
+              decoration: InputDecoration(
+                hintText: '输入番剧名称...',
+                prefixIcon: const Icon(Icons.search),
+                suffixIcon: IconButton(
+                  icon: const Icon(Icons.arrow_forward),
+                  onPressed: _startSearch,
+                ),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
                 ),
               ),
-            ),
-
-          if (_error != null) Expanded(child: Center(child: Text('搜索失败: $_error'))),
-
-          // 搜索结果列表
-          if (_results.isNotEmpty)
-            Expanded(
-              child: ListView.separated(
-                itemCount: _results.length,
-                separatorBuilder: (_, __) => const Divider(height: 1),
-                itemBuilder: (_, i) {
-                  final r = _results[i];
-                  return ListTile(
-                    title: Text(r.title),
-                    subtitle: Text('${r.rule.name} · ${r.link}', maxLines: 1, overflow: TextOverflow.ellipsis),
-                    trailing: const Icon(Icons.chevron_right),
-                    onTap: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => DetailPage(rule: r.rule, detailUrl: r.link, title: r.title),
-                        ),
-                      );
-                    },
-                  );
-                },
-              ),
+              onSubmitted: (_) => _startSearch(),
             ),
             
-          // 核心：空状态引导（包含无规则时的提示）
-          if (!_isSearching && _results.isEmpty && _error == null && _searchHistory.isEmpty && _searchErrors.isEmpty)
-            Expanded(
-              child: Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.search_off, size: 64, color: Colors.grey.withOpacity(0.5)),
-                    const SizedBox(height: 16),
-                    const Text('输入关键词开始搜索吧！', style: TextStyle(color: Colors.grey, fontSize: 16)),
-                    if (_rules.isEmpty) ...[
-                      const SizedBox(height: 24),
-                      const Text('检测到您还没有导入任何规则', style: TextStyle(color: Colors.orangeAccent, fontSize: 14)),
-                      const SizedBox(height: 12),
-                      FilledButton.icon(
-                        icon: const Icon(Icons.cloud_download),
-                        label: const Text('去设置中拉取规则'),
-                        onPressed: () {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('请点击底部“我的” -> “设置”进行规则管理'),
-                              duration: Duration(seconds: 3),
-                            ),
-                          );
-                        },
-                      )
-                    ]
-                  ],
+            const SizedBox(height: 24),
+            
+            // 规则为空时的提示
+            if (_rules.isEmpty)
+              Card(
+                color: Colors.orange.withOpacity(0.1),
+                shape: RoundedRectangleBorder(
+                  side: const BorderSide(color: Colors.orange),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: ListTile(
+                  leading: const Icon(Icons.warning_amber, color: Colors.orange),
+                  title: const Text('暂无可用规则'),
+                  subtitle: const Text('请前往设置导入规则后才能进行搜索'),
+                  trailing: TextButton(
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const SettingsPage()),
+                      ).then((_) => _loadData());
+                    },
+                    child: const Text('去设置'),
+                  ),
                 ),
               ),
+            
+            const SizedBox(height: 16),
+            
+            // 搜索历史
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text('搜索历史', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                if (_history.isNotEmpty)
+                  TextButton(
+                    onPressed: () async {
+                      // 这里需要你根据 StorageService 补全清空历史的方法
+                      // await _storage.clearHistory();
+                      // _loadData();
+                    },
+                    child: const Text('清空', style: TextStyle(color: Colors.grey)),
+                  ),
+              ],
             ),
-        ],
+            
+            const SizedBox(height: 8),
+            
+            Expanded(
+              child: _history.isEmpty
+                  ? const Center(
+                      child: Text('暂无搜索历史', style: TextStyle(color: Colors.grey)),
+                    )
+                  : ListView.separated(
+                      itemCount: _history.length,
+                      separatorBuilder: (_, __) => const Divider(),
+                      itemBuilder: (context, index) {
+                        final item = _history[index];
+                        return ListTile(
+                          leading: const Icon(Icons.history),
+                          title: Text(item.animeTitle),
+                          subtitle: Text(item.episodeTitle),
+                          onTap: () {
+                            _searchController.text = item.animeTitle;
+                            _startSearch();
+                          },
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -114,7 +114,7 @@ class _SettingsPageState extends State<SettingsPage> {
       final engine = SelectorEngine(); // 🔥 改用 SelectorEngine
       final url = rule.baseUrl.replaceAll('{keyword}', '');
       // 使用轻量 HTTP 探测主页是否存活
-      await engine.fetchHtml(url, timeout: const Duration(seconds: 10));
+      await engine.fetchHtml(url, timeout: const Duration(seconds: 10), strategy: "direct");
       if (mounted) setState(() => _healthStatus[rule.id] = true);
     } catch (_) {
       if (mounted) setState(() => _healthStatus[rule.id] = false);

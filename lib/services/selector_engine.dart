@@ -33,13 +33,11 @@ class SelectorEngine {
       throw NetworkException('非法的协议请求: 仅支持 HTTP/HTTPS');
     }
 
-    // 🔥 策略分派：如果明确指定了 webview 或 iframe，直接跳过探路
     if (strategy == 'webview' || strategy == 'iframe') {
       debugPrint('[SelectorEngine] 规则策略为 $strategy，跳过 HTTP 探测，直接启用 WebView');
       return _fetchWithWebView(url, waitForSelector: waitForSelector, timeout: timeout);
     }
 
-    // direct 策略：先探路
     try {
       final resp = await http.get(Uri.parse(url), headers: _httpHeaders).timeout(const Duration(seconds: 10));
       if (resp.statusCode == 200) {
@@ -52,12 +50,10 @@ class SelectorEngine {
       debugPrint('[SelectorEngine] HTTP probe failed: $e');
     }
 
-    // direct 策略失败后，兜底降级到 WebView
     debugPrint('[SelectorEngine] HTTP 降级至 WebView');
     return _fetchWithWebView(url, waitForSelector: waitForSelector, timeout: timeout);
   }
 
-  // 🔥 WebView 抓取封装（带自动销毁和超时控制）
   Future<String> _fetchWithWebView(
     String url, {
     String? waitForSelector,
@@ -225,6 +221,20 @@ class SelectorEngine {
       return href.isEmpty ? episodeUrl : _absolute(rule.baseUrl, href);
     }
   }
+
+  // ==================== 调试器专用公开接口 ====================
+  xml.XmlDocument parseHtml(String rawHtml) => _parseHtmlToXmlDoc(rawHtml);
+
+  List<xml.XmlElement> findElements(xml.XmlNode context, String expr) {
+    if (expr.trim().isEmpty) return [];
+    try {
+      return context.xpath(_normalizeXpath(expr)).whereType<xml.XmlElement>().toList();
+    } catch (e) {
+      debugPrint('[SelectorEngine] findElements error: $e');
+      return [];
+    }
+  }
+  // =========================================================
 
   // ==================== 工具类与兼容层 ====================
   xml.XmlDocument _parseHtmlToXmlDoc(String rawHtml) {

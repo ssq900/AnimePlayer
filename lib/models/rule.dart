@@ -1,4 +1,4 @@
-import '../core/exceptions.dart';
+import '../services/exceptions.dart';
 
 class AnimeRule {
   final String id;
@@ -20,7 +20,7 @@ class AnimeRule {
   // 标记：是否已经成功迁移到 CSS 模式
   final bool isCssBased;
 
-  // 🔥 新增：抓取策略（direct / webview / iframe）
+  // 🔥 新增：抓取策略。'direct'(默认直连), 'webview'(无头浏览器), 'iframe'(特殊嵌套处理)
   final String fetchStrategy;
 
   final int successCount;
@@ -39,7 +39,7 @@ class AnimeRule {
     this.episodeListSelectorCss = '',
     this.episodeLinkSelectorCss = '',
     this.isCssBased = false,
-    this.fetchStrategy = 'direct', // 默认为直连
+    this.fetchStrategy = 'direct', // 默认策略
     this.successCount = 0,
     this.failCount = 0,
   });
@@ -66,7 +66,7 @@ class AnimeRule {
         'episodeListSelectorCss': episodeListSelectorCss,
         'episodeLinkSelectorCss': episodeLinkSelectorCss,
         'isCssBased': isCssBased,
-        'fetchStrategy': fetchStrategy,
+        'fetchStrategy': fetchStrategy, // 序列化
         'successCount': successCount,
         'failCount': failCount,
       };
@@ -85,7 +85,7 @@ class AnimeRule {
       episodeListSelectorCss: j['episodeListSelectorCss'] ?? '',
       episodeLinkSelectorCss: j['episodeLinkSelectorCss'] ?? '',
       isCssBased: j['isCssBased'] ?? false,
-      fetchStrategy: j['fetchStrategy'] ?? 'direct',
+      fetchStrategy: j['fetchStrategy'] ?? 'direct', // 默认兼容
       successCount: j['successCount'] ?? 0,
       failCount: j['failCount'] ?? 0,
     );

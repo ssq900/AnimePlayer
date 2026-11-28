@@ -5,50 +5,51 @@ version: 1.0.0+1
 
 environment:
   sdk: '>=3.5.0 <4.0.0'
-  flutter: '>=3.35.0 <3.36.0'  # 严格锁定 Flutter 版本，防止 minSdk 漂移
+  # 🔥 移除了 <3.36.0 的严格上限，允许获取新版 Flutter 的底层渲染性能优化
+  flutter: '>=3.35.0'
 
 dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.8
 
-  # === 我们新增的状态管理 ===
-  flutter_riverpod: ^2.6.1
-
   # ==================== 网络请求与解析 ====================
   http: ^1.2.2
-  html: ^0.15.4                 # 用于 HTML 标签修复与清洗
-  xml: ^6.5.0                   # 核心：用于原生 XPath 解析
-  gbk_codec: ^0.4.0             # 用于兼容老旧网页的 GBK 编码
+  html: ^0.15.4                 
+  xml: ^6.5.0                   
+  gbk_codec: ^0.4.0             
 
-  # ==================== 本地存储与并发 ====================
+  # ==================== 状态管理与本地存储 ====================
+  flutter_riverpod: ^2.6.1
   shared_preferences: ^2.5.3
   path_provider: ^2.1.5
-  synchronized: ^3.1.0+1        # 核心：用于 JSON 文件的并发安全锁
-  webdav_client: ^1.2.1         # 用于 WebDAV 云端同步
+  synchronized: ^3.1.0+1        
+  webdav_client: ^1.2.1         
 
   # ==================== 网页抓取与嗅探 ====================
-  # 锁定精确版本，防止 API 变动导致编译失败
-  flutter_inappwebview: 6.1.5   
+  # 🔥 解除锁死，使用 ^ 兼容最新补丁版本（修复潜在的 API 或安全漏洞）
+  flutter_inappwebview: ^6.1.5   
   url_launcher: ^6.3.1
   file_picker: ^8.0.0+1
   
   # ==================== 播放器与手势控制 ====================
-  video_player: 2.9.5           # 锁定版本，防止 ExoPlayer 行为漂移
-  screen_brightness: ^2.0.0     # 手势调亮度
-  volume_controller: ^3.3.0     # 手势调音量
-  share_plus: ^10.1.1           # 截图分享
+  # 🔥 解除锁死
+  video_player: ^2.9.5           
+  screen_brightness: ^2.0.0     
+  volume_controller: ^3.3.0     
+  share_plus: ^10.1.1           
+  canvas_danmaku: ^0.3.4        # 高性能弹幕引擎
 
   # ==================== 进阶扩展功能 ====================
-  flutter_local_notifications: ^18.0.1  # 追番日历通知
-  speech_to_text: ^7.0.0                # 语音搜索
-  dlna_dart: 0.1.2                      # 局域网 DLNA 投屏
+  flutter_local_notifications: ^18.0.1  
+  speech_to_text: ^7.0.0                
+  dlna_dart: ^0.1.2                     # 🔥 解除锁死
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
-  mocktail: ^1.0.4              # 用于单元测试
+  mocktail: ^1.0.4              
 
 flutter:
   uses-material-design: true

@@ -3,7 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:video_player/video_player.dart';
 import '../features/player/playback_controller.dart';
 import '../models/rule.dart';
-import '../widgets/danmaku_overlay.dart'; // 🔥 引入我们刚写的弹幕层
+import '../widgets/danmaku_overlay.dart';
+import '../domain/danmaku_provider.dart'; // 🔥 引入数据模型和 Provider
+import '../domain/danmaku_repository.dart'; // 🔥 引入聚合仓库
 
 class PlayerPage extends ConsumerStatefulWidget {
   final String? videoUrl;
@@ -28,9 +30,14 @@ class PlayerPage extends ConsumerStatefulWidget {
 }
 
 class _PlayerPageState extends ConsumerState<PlayerPage> {
+  List<DanmakuItem> _currentDanmakus = [];
+  bool _isLoadingDanmaku = true;
+
   @override
   void initState() {
     super.initState();
+    
+    // 1. 初始化播放器
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final url = (widget.videoUrl != null && widget.videoUrl!.isNotEmpty) 
           ? widget.videoUrl! 
@@ -40,17 +47,60 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
         ref.read(playbackControllerProvider.notifier).initialize(url);
       }
     });
+
+    // 2. 加载弹幕
+    _loadDanmaku();
   }
 
-  // 🔥 生成测试弹幕的数据源
-  List<DanmakuItem> _mockDanmakus() {
-    // 生成 200 条测试弹幕
+  Future<void> _loadDanmaku() async {
+    // 尝试从 widget 中获取真实的番剧名和集数
+    final animeTitle = widget.animeTitle ?? widget.title ?? '未知番剧';
+    
+    // 简易提取集数（如果标题是 "第01集"，提取出 1）
+    int episode = 1;
+    if (widget.episodeTitle != null) {
+      final match = RegExp(r'\d+').firstMatch(widget.episodeTitle!);
+      if (match != null) {
+        episode = int.tryParse(match.group(0)!) ?? 1;
+      }
+    }
+
+    // 实例化仓库
+    final repo = DanmakuRepository([
+      LocalJsonProvider(), 
+      DandanplayProvider()
+    ]);
+    
+    try {
+      // 并发拉取并合并
+      final danmakus = await repo.loadAll(animeTitle, episode);
+      
+      if (mounted) {
+        setState(() {
+          // 如果真实数据为空（因为还没实现API），则使用测试数据兜底
+          _currentDanmakus = danmakus.isNotEmpty ? danmakus : _generateMockData();
+          _isLoadingDanmaku = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('弹幕加载失败: $e');
+      if (mounted) {
+        setState(() {
+          _currentDanmakus = _generateMockData(); // 报错也兜底
+          _isLoadingDanmaku = false;
+        });
+      }
+    }
+  }
+
+  // 兜底测试数据
+  List<DanmakuItem> _generateMockData() {
     return List.generate(200, (index) {
       return DanmakuItem(
-        time: index * 0.5, // 每 0.5 秒发一条
+        time: index * 0.5,
         text: '测试弹幕 $index 号，Canvas 高性能渲染',
-        color: index % 3 == 0 ? 0xFF0000 : 0xFFFFFF, // 部分红色，部分白色
-        type: index % 10 == 0 ? 1 : 0, // 每 10 条发一条顶部固定弹幕
+        color: index % 3 == 0 ? 0xFF0000 : 0xFFFFFF,
+        type: index % 10 == 0 ? 1 : 0,
       );
     });
   }
@@ -113,14 +163,16 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
               ),
             ),
             
-            // 2. Canvas 弹幕层 (挂载在这里，接收播放器状态)
+            // 2. 弹幕层（加入加载状态判断）
             Positioned.fill(
-              child: DanmakuOverlay(
-                danmakus: _mockDanmakus(), // 注入测试数据
-                currentPosition: state.position.inMilliseconds / 1000.0, // 转化为秒
-                isPlaying: state.isPlaying,
-                playbackSpeed: state.playbackSpeed,
-              ),
+              child: _isLoadingDanmaku 
+                ? const SizedBox() // 如果弹幕还在加载中，先不渲染弹幕层
+                : DanmakuOverlay(
+                    danmakus: _currentDanmakus, 
+                    currentPosition: state.position.inMilliseconds / 1000.0, 
+                    isPlaying: state.isPlaying,
+                    playbackSpeed: state.playbackSpeed,
+                  ),
             ),
 
             // 3. 底部进度条

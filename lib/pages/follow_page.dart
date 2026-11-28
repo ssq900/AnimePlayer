@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../models/rule.dart';
 import '../data/storage_service.dart';
 import 'schedule_page.dart';
+import '../services/storage_service.dart';
 
 class FollowPage extends StatefulWidget {
   const FollowPage({super.key});

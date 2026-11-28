@@ -4,25 +4,16 @@ class AnimeRule {
   final String id;
   final String name;
   final String baseUrl;
-  
-  // 旧版 XPath 字段（保留兼容）
   final String searchSelector;
   final String animeLinkSelector;
   final String episodeListSelector;
   final String episodeLinkSelector;
-
-  // 新版 CSS 字段
   final String searchSelectorCss;
   final String animeLinkSelectorCss;
   final String episodeListSelectorCss;
   final String episodeLinkSelectorCss;
-  
-  // 标记：是否已经成功迁移到 CSS 模式
   final bool isCssBased;
-
-  // 🔥 新增：抓取策略。'direct'(默认直连), 'webview'(无头浏览器), 'iframe'(特殊嵌套处理)
   final String fetchStrategy;
-
   final int successCount;
   final int failCount;
 
@@ -39,7 +30,7 @@ class AnimeRule {
     this.episodeListSelectorCss = '',
     this.episodeLinkSelectorCss = '',
     this.isCssBased = false,
-    this.fetchStrategy = 'direct', // 默认策略
+    this.fetchStrategy = 'direct',
     this.successCount = 0,
     this.failCount = 0,
   });
@@ -54,73 +45,85 @@ class AnimeRule {
   }
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'name': name,
-        'baseUrl': baseUrl,
-        'searchSelector': searchSelector,
-        'animeLinkSelector': animeLinkSelector,
-        'episodeListSelector': episodeListSelector,
-        'episodeLinkSelector': episodeLinkSelector,
-        'searchSelectorCss': searchSelectorCss,
-        'animeLinkSelectorCss': animeLinkSelectorCss,
-        'episodeListSelectorCss': episodeListSelectorCss,
-        'episodeLinkSelectorCss': episodeLinkSelectorCss,
-        'isCssBased': isCssBased,
-        'fetchStrategy': fetchStrategy, // 序列化
-        'successCount': successCount,
-        'failCount': failCount,
+        'id': id, 'name': name, 'baseUrl': baseUrl,
+        'searchSelector': searchSelector, 'animeLinkSelector': animeLinkSelector,
+        'episodeListSelector': episodeListSelector, 'episodeLinkSelector': episodeLinkSelector,
+        'searchSelectorCss': searchSelectorCss, 'animeLinkSelectorCss': animeLinkSelectorCss,
+        'episodeListSelectorCss': episodeListSelectorCss, 'episodeLinkSelectorCss': episodeLinkSelectorCss,
+        'isCssBased': isCssBased, 'fetchStrategy': fetchStrategy,
+        'successCount': successCount, 'failCount': failCount,
       };
 
   factory AnimeRule.fromJson(Map<String, dynamic> j) {
     return AnimeRule(
       id: j['id'] ?? DateTime.now().millisecondsSinceEpoch.toString(),
-      name: j['name'] ?? '未命名规则',
-      baseUrl: j['baseUrl'] ?? '',
-      searchSelector: j['searchSelector'] ?? '',
-      animeLinkSelector: j['animeLinkSelector'] ?? '',
-      episodeListSelector: j['episodeListSelector'] ?? '',
-      episodeLinkSelector: j['episodeLinkSelector'] ?? '',
-      searchSelectorCss: j['searchSelectorCss'] ?? '',
-      animeLinkSelectorCss: j['animeLinkSelectorCss'] ?? '',
-      episodeListSelectorCss: j['episodeListSelectorCss'] ?? '',
-      episodeLinkSelectorCss: j['episodeLinkSelectorCss'] ?? '',
-      isCssBased: j['isCssBased'] ?? false,
-      fetchStrategy: j['fetchStrategy'] ?? 'direct', // 默认兼容
-      successCount: j['successCount'] ?? 0,
-      failCount: j['failCount'] ?? 0,
+      name: j['name'] ?? '未命名规则', baseUrl: j['baseUrl'] ?? '',
+      searchSelector: j['searchSelector'] ?? '', animeLinkSelector: j['animeLinkSelector'] ?? '',
+      episodeListSelector: j['episodeListSelector'] ?? '', episodeLinkSelector: j['episodeLinkSelector'] ?? '',
+      searchSelectorCss: j['searchSelectorCss'] ?? '', animeLinkSelectorCss: j['animeLinkSelectorCss'] ?? '',
+      episodeListSelectorCss: j['episodeListSelectorCss'] ?? '', episodeLinkSelectorCss: j['episodeLinkSelectorCss'] ?? '',
+      isCssBased: j['isCssBased'] ?? false, fetchStrategy: j['fetchStrategy'] ?? 'direct',
+      successCount: j['successCount'] ?? 0, failCount: j['failCount'] ?? 0,
     );
   }
 
-  AnimeRule copyWith({
-    String? searchSelectorCss,
-    String? animeLinkSelectorCss,
-    String? episodeListSelectorCss,
-    String? episodeLinkSelectorCss,
-    bool? isCssBased,
-    String? fetchStrategy,
-  }) {
+  AnimeRule copyWith({ String? searchSelectorCss, String? animeLinkSelectorCss, String? episodeListSelectorCss, String? episodeLinkSelectorCss, bool? isCssBased, String? fetchStrategy }) {
     return AnimeRule(
-      id: this.id,
-      name: this.name,
-      baseUrl: this.baseUrl,
-      searchSelector: this.searchSelector,
-      animeLinkSelector: this.animeLinkSelector,
-      episodeListSelector: this.episodeListSelector,
-      episodeLinkSelector: this.episodeLinkSelector,
+      id: this.id, name: this.name, baseUrl: this.baseUrl,
+      searchSelector: this.searchSelector, animeLinkSelector: this.animeLinkSelector,
+      episodeListSelector: this.episodeListSelector, episodeLinkSelector: this.episodeLinkSelector,
       searchSelectorCss: searchSelectorCss ?? this.searchSelectorCss,
       animeLinkSelectorCss: animeLinkSelectorCss ?? this.animeLinkSelectorCss,
       episodeListSelectorCss: episodeListSelectorCss ?? this.episodeListSelectorCss,
       episodeLinkSelectorCss: episodeLinkSelectorCss ?? this.episodeLinkSelectorCss,
-      isCssBased: isCssBased ?? this.isCssBased,
-      fetchStrategy: fetchStrategy ?? this.fetchStrategy,
-      successCount: this.successCount,
-      failCount: this.failCount,
+      isCssBased: isCssBased ?? this.isCssBased, fetchStrategy: fetchStrategy ?? this.fetchStrategy,
+      successCount: this.successCount, failCount: this.failCount,
     );
   }
 
   static AnimeRule empty() => AnimeRule(
         id: DateTime.now().millisecondsSinceEpoch.toString(),
-        name: '', baseUrl: '', searchSelector: '',
-        animeLinkSelector: '', episodeListSelector: '', episodeLinkSelector: '',
+        name: '', baseUrl: '', searchSelector: '', animeLinkSelector: '', episodeListSelector: '', episodeLinkSelector: '',
       );
+}
+
+// ================= 补全所有依赖的模型 =================
+class SearchResult {
+  final String title;
+  final String link;
+  final AnimeRule rule;
+  const SearchResult({required this.title, required this.link, required this.rule});
+}
+
+class EpisodeItem {
+  final String title;
+  final String link;
+  const EpisodeItem({required this.title, required this.link});
+}
+
+class HistoryItem {
+  final String animeTitle;
+  final String episodeTitle;
+  final String episodeUrl;
+  final String ruleId;
+  final String detailUrl;
+  final int timestamp;
+
+  const HistoryItem({required this.animeTitle, required this.episodeTitle, required this.episodeUrl, required this.ruleId, required this.detailUrl, required this.timestamp});
+
+  Map<String, dynamic> toJson() => {'animeTitle': animeTitle, 'episodeTitle': episodeTitle, 'episodeUrl': episodeUrl, 'ruleId': ruleId, 'detailUrl': detailUrl, 'timestamp': timestamp};
+  factory HistoryItem.fromJson(Map<String, dynamic> j) => HistoryItem(animeTitle: j['animeTitle'] ?? '', episodeTitle: j['episodeTitle'] ?? '', episodeUrl: j['episodeUrl'] ?? '', ruleId: j['ruleId'] ?? '', detailUrl: j['detailUrl'] ?? '', timestamp: j['timestamp'] ?? 0);
+}
+
+class ScheduleItem {
+  final String animeTitle;
+  final String detailUrl;
+  final int weekday;
+  final String lastEpisodeTitle;
+  final String episodeUrl;
+
+  const ScheduleItem({required this.animeTitle, required this.detailUrl, required this.weekday, this.lastEpisodeTitle = '', this.episodeUrl = ''});
+
+  Map<String, dynamic> toJson() => {'animeTitle': animeTitle, 'detailUrl': detailUrl, 'weekday': weekday, 'lastEpisodeTitle': lastEpisodeTitle, 'episodeUrl': episodeUrl};
+  factory ScheduleItem.fromJson(Map<String, dynamic> j) => ScheduleItem(animeTitle: j['animeTitle'] ?? '', detailUrl: j['detailUrl'] ?? '', weekday: j['weekday'] ?? 1, lastEpisodeTitle: j['lastEpisodeTitle'] ?? '', episodeUrl: j['episodeUrl'] ?? '');
 }

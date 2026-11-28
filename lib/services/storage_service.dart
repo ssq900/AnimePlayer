@@ -1,16 +1,16 @@
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/rule.dart';
-import '../utils/rule_migrator.dart'; // 🔥 引入迁移器
+import '../models/playback_record.dart';
+import '../utils/rule_migrator.dart';
 
 class StorageService {
   static const _keyRules = 'anime_rules';
-  static const _keyHistory = 'watch_history';
+  static const _keyHistory = 'watch_history'; // 兼容旧版
+  static const _keyRecords = 'playback_records'; // 新版规范实体
   static const _keySchedules = 'schedules';
 
-  Future<void> init() async {
-    // 初始化动作，目前留空
-  }
+  Future<void> init() async {}
 
   // ================= 规则 =================
   Future<void> saveRules(List<AnimeRule> rules) async {
@@ -22,22 +22,13 @@ class StorageService {
     final prefs = await SharedPreferences.getInstance();
     final str = prefs.getString(_keyRules);
     if (str == null) return [];
-    
     try {
       final List<dynamic> jsonList = jsonDecode(str);
       final rules = jsonList.map((e) => AnimeRule.fromJson(e)).toList();
-      
-      // 🔥 核心：在读取时自动尝试平滑迁移到 CSS
-      // 这样旧规则也能享受新引擎的速度
-      final migratedRules = rules.map((r) {
-        // 如果它有 XPath 但没有标记为 CSS，说明是老规则，自动转换
-        if (!r.isCssBased && r.searchSelector.isNotEmpty) {
-          return RuleMigrator.migrateToCss(r);
-        }
+      return rules.map((r) {
+        if (!r.isCssBased && r.searchSelector.isNotEmpty) return RuleMigrator.migrateToCss(r);
         return r;
       }).toList();
-
-      return migratedRules;
     } catch (e) {
       return [];
     }
@@ -62,33 +53,81 @@ class StorageService {
     return true;
   }
 
-  // ================= 历史记录 =================
-  Future<void> saveHistory(List<dynamic> history) async {
+  // ================= 新版播放记录 (PlaybackRecord) =================
+  Future<List<PlaybackRecord>> loadPlaybackRecords() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_keyHistory, jsonEncode(history.map((e) {
-      try { return e.toJson(); } catch (_) { return e; }
-    }).toList()));
+    final str = prefs.getString(_keyRecords);
+    if (str == null) return [];
+    try {
+      final List<dynamic> jsonList = jsonDecode(str);
+      return jsonList.map((e) => PlaybackRecord.fromJson(e)).toList();
+    } catch (_) {
+      return [];
+    }
   }
 
-  Future<List<dynamic>> loadHistory() async {
+  Future<void> savePlaybackRecords(List<PlaybackRecord> records) async {
+    final prefs = await SharedPreferences.getInstance();
+    // 按更新时间倒序
+    records.sort((a, b) => b.lastUpdated.compareTo(a.lastUpdated));
+    await prefs.setString(_keyRecords, jsonEncode(records.map((e) => e.toJson()).toList()));
+  }
+
+  // 插入或更新一条记录（以 URL 为唯一基准）
+  Future<void> upsertPlaybackRecord(PlaybackRecord newRecord) async {
+    final records = await loadPlaybackRecords();
+    final index = records.indexWhere((r) => r.url == newRecord.url);
+    if (index >= 0) {
+      records[index] = newRecord;
+    } else {
+      records.add(newRecord);
+    }
+    await savePlaybackRecords(records);
+  }
+
+  // 获取单条播放记录（用于断点续播）
+  Future<PlaybackRecord?> getPlaybackRecord(String url) async {
+    final records = await loadPlaybackRecords();
+    try {
+      return records.firstWhere((r) => r.url == url);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // ================= 旧版历史记录（保留兜底） =================
+  Future<void> saveHistory(List<HistoryItem> history) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_keyHistory, jsonEncode(history.map((e) => e.toJson()).toList()));
+  }
+
+  Future<List<HistoryItem>> loadHistory() async {
     final prefs = await SharedPreferences.getInstance();
     final str = prefs.getString(_keyHistory);
     if (str == null) return [];
-    try { return jsonDecode(str); } catch (_) { return []; }
+    try {
+      final List<dynamic> jsonList = jsonDecode(str);
+      return jsonList.map((e) => HistoryItem.fromJson(e)).toList();
+    } catch (_) {
+      return [];
+    }
   }
 
   // ================= 追番表 =================
-  Future<void> saveSchedules(List<dynamic> schedules) async {
+  Future<void> saveSchedules(List<ScheduleItem> schedules) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_keySchedules, jsonEncode(schedules.map((e) {
-      try { return e.toJson(); } catch (_) { return e; }
-    }).toList()));
+    await prefs.setString(_keySchedules, jsonEncode(schedules.map((e) => e.toJson()).toList()));
   }
 
-  Future<List<dynamic>> loadSchedules() async {
+  Future<List<ScheduleItem>> loadSchedules() async {
     final prefs = await SharedPreferences.getInstance();
     final str = prefs.getString(_keySchedules);
     if (str == null) return [];
-    try { return jsonDecode(str); } catch (_) { return []; }
+    try {
+      final List<dynamic> jsonList = jsonDecode(str);
+      return jsonList.map((e) => ScheduleItem.fromJson(e)).toList();
+    } catch (_) {
+      return [];
+    }
   }
 }

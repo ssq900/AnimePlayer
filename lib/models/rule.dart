@@ -4,18 +4,26 @@ class AnimeRule {
   final String id;
   final String name;
   final String baseUrl;
+  
   final String searchSelector;
   final String animeLinkSelector;
   final String episodeListSelector;
   final String episodeLinkSelector;
+
   final String searchSelectorCss;
   final String animeLinkSelectorCss;
   final String episodeListSelectorCss;
   final String episodeLinkSelectorCss;
+  
   final bool isCssBased;
   final String fetchStrategy;
+
+  // 🔥 新增：规则健康度字段
   final int successCount;
   final int failCount;
+  final int lastSuccessTime;       // 最后一次成功的时间戳
+  final String lastFailureReason;  // 最后一次失败原因
+  final String lastFailureStage;   // 最后一次失败环节（如 search, episodes, media）
 
   const AnimeRule({
     required this.id,
@@ -33,6 +41,9 @@ class AnimeRule {
     this.fetchStrategy = 'direct',
     this.successCount = 0,
     this.failCount = 0,
+    this.lastSuccessTime = 0,
+    this.lastFailureReason = '',
+    this.lastFailureStage = '',
   });
 
   double get trustScore => (successCount + 1) / (successCount + failCount + 2);
@@ -45,49 +56,92 @@ class AnimeRule {
   }
 
   Map<String, dynamic> toJson() => {
-        'id': id, 'name': name, 'baseUrl': baseUrl,
-        'searchSelector': searchSelector, 'animeLinkSelector': animeLinkSelector,
-        'episodeListSelector': episodeListSelector, 'episodeLinkSelector': episodeLinkSelector,
-        'searchSelectorCss': searchSelectorCss, 'animeLinkSelectorCss': animeLinkSelectorCss,
-        'episodeListSelectorCss': episodeListSelectorCss, 'episodeLinkSelectorCss': episodeLinkSelectorCss,
-        'isCssBased': isCssBased, 'fetchStrategy': fetchStrategy,
-        'successCount': successCount, 'failCount': failCount,
+        'id': id,
+        'name': name,
+        'baseUrl': baseUrl,
+        'searchSelector': searchSelector,
+        'animeLinkSelector': animeLinkSelector,
+        'episodeListSelector': episodeListSelector,
+        'episodeLinkSelector': episodeLinkSelector,
+        'searchSelectorCss': searchSelectorCss,
+        'animeLinkSelectorCss': animeLinkSelectorCss,
+        'episodeListSelectorCss': episodeListSelectorCss,
+        'episodeLinkSelectorCss': episodeLinkSelectorCss,
+        'isCssBased': isCssBased,
+        'fetchStrategy': fetchStrategy,
+        'successCount': successCount,
+        'failCount': failCount,
+        'lastSuccessTime': lastSuccessTime,
+        'lastFailureReason': lastFailureReason,
+        'lastFailureStage': lastFailureStage,
       };
 
   factory AnimeRule.fromJson(Map<String, dynamic> j) {
     return AnimeRule(
       id: j['id'] ?? DateTime.now().millisecondsSinceEpoch.toString(),
-      name: j['name'] ?? '未命名规则', baseUrl: j['baseUrl'] ?? '',
-      searchSelector: j['searchSelector'] ?? '', animeLinkSelector: j['animeLinkSelector'] ?? '',
-      episodeListSelector: j['episodeListSelector'] ?? '', episodeLinkSelector: j['episodeLinkSelector'] ?? '',
-      searchSelectorCss: j['searchSelectorCss'] ?? '', animeLinkSelectorCss: j['animeLinkSelectorCss'] ?? '',
-      episodeListSelectorCss: j['episodeListSelectorCss'] ?? '', episodeLinkSelectorCss: j['episodeLinkSelectorCss'] ?? '',
-      isCssBased: j['isCssBased'] ?? false, fetchStrategy: j['fetchStrategy'] ?? 'direct',
-      successCount: j['successCount'] ?? 0, failCount: j['failCount'] ?? 0,
+      name: j['name'] ?? '未命名规则',
+      baseUrl: j['baseUrl'] ?? '',
+      searchSelector: j['searchSelector'] ?? '',
+      animeLinkSelector: j['animeLinkSelector'] ?? '',
+      episodeListSelector: j['episodeListSelector'] ?? '',
+      episodeLinkSelector: j['episodeLinkSelector'] ?? '',
+      searchSelectorCss: j['searchSelectorCss'] ?? '',
+      animeLinkSelectorCss: j['animeLinkSelectorCss'] ?? '',
+      episodeListSelectorCss: j['episodeListSelectorCss'] ?? '',
+      episodeLinkSelectorCss: j['episodeLinkSelectorCss'] ?? '',
+      isCssBased: j['isCssBased'] ?? false,
+      fetchStrategy: j['fetchStrategy'] ?? 'direct',
+      successCount: j['successCount'] ?? 0,
+      failCount: j['failCount'] ?? 0,
+      lastSuccessTime: j['lastSuccessTime'] ?? 0,
+      lastFailureReason: j['lastFailureReason'] ?? '',
+      lastFailureStage: j['lastFailureStage'] ?? '',
     );
   }
 
-  AnimeRule copyWith({ String? searchSelectorCss, String? animeLinkSelectorCss, String? episodeListSelectorCss, String? episodeLinkSelectorCss, bool? isCssBased, String? fetchStrategy }) {
+  AnimeRule copyWith({
+    String? searchSelectorCss,
+    String? animeLinkSelectorCss,
+    String? episodeListSelectorCss,
+    String? episodeLinkSelectorCss,
+    bool? isCssBased,
+    String? fetchStrategy,
+    int? successCount,
+    int? failCount,
+    int? lastSuccessTime,
+    String? lastFailureReason,
+    String? lastFailureStage,
+  }) {
     return AnimeRule(
-      id: this.id, name: this.name, baseUrl: this.baseUrl,
-      searchSelector: this.searchSelector, animeLinkSelector: this.animeLinkSelector,
-      episodeListSelector: this.episodeListSelector, episodeLinkSelector: this.episodeLinkSelector,
+      id: this.id,
+      name: this.name,
+      baseUrl: this.baseUrl,
+      searchSelector: this.searchSelector,
+      animeLinkSelector: this.animeLinkSelector,
+      episodeListSelector: this.episodeListSelector,
+      episodeLinkSelector: this.episodeLinkSelector,
       searchSelectorCss: searchSelectorCss ?? this.searchSelectorCss,
       animeLinkSelectorCss: animeLinkSelectorCss ?? this.animeLinkSelectorCss,
       episodeListSelectorCss: episodeListSelectorCss ?? this.episodeListSelectorCss,
       episodeLinkSelectorCss: episodeLinkSelectorCss ?? this.episodeLinkSelectorCss,
-      isCssBased: isCssBased ?? this.isCssBased, fetchStrategy: fetchStrategy ?? this.fetchStrategy,
-      successCount: this.successCount, failCount: this.failCount,
+      isCssBased: isCssBased ?? this.isCssBased,
+      fetchStrategy: fetchStrategy ?? this.fetchStrategy,
+      successCount: successCount ?? this.successCount,
+      failCount: failCount ?? this.failCount,
+      lastSuccessTime: lastSuccessTime ?? this.lastSuccessTime,
+      lastFailureReason: lastFailureReason ?? this.lastFailureReason,
+      lastFailureStage: lastFailureStage ?? this.lastFailureStage,
     );
   }
 
   static AnimeRule empty() => AnimeRule(
         id: DateTime.now().millisecondsSinceEpoch.toString(),
-        name: '', baseUrl: '', searchSelector: '', animeLinkSelector: '', episodeListSelector: '', episodeLinkSelector: '',
+        name: '', baseUrl: '', searchSelector: '',
+        animeLinkSelector: '', episodeListSelector: '', episodeLinkSelector: '',
       );
 }
 
-// ================= 补全所有依赖的模型 =================
+// ================= 保留其他模型 (SearchResult, EpisodeItem, HistoryItem, ScheduleItem) =================
 class SearchResult {
   final String title;
   final String link;
@@ -106,7 +160,7 @@ class HistoryItem {
   final String episodeTitle;
   final String episodeUrl;
   final String ruleId;
-  final String ruleName; // 🔥 新增：修复找不到 getter 的报错
+  final String ruleName;
   final String detailUrl;
   final int timestamp;
 
@@ -128,7 +182,7 @@ class ScheduleItem {
   final int weekday;
   final String lastEpisodeTitle;
   final String episodeUrl;
-  final String ruleId; // 🔥 新增：修复找不到 getter 的报错
+  final String ruleId;
 
   const ScheduleItem({
     required this.animeTitle, required this.detailUrl, required this.weekday, 

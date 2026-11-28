@@ -1,13 +1,13 @@
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/rule.dart';
 import '../services/storage_service.dart';
 import '../services/kazumi_service.dart';
 import '../services/sync_service.dart';
+import '../services/selector_engine.dart'; // 🔥 替换为 SelectorEngine
+import '../services/exceptions.dart';
 import 'rule_edit_page.dart';
 import 'debugger_page.dart';
-import '../services/selector_engine.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -20,14 +20,16 @@ class _SettingsPageState extends State<SettingsPage> {
   final _storage = StorageService();
   List<AnimeRule> _rules = [];
 
+  // WebDAV 配置控制器
   final _urlController = TextEditingController();
   final _userController = TextEditingController();
   final _passController = TextEditingController();
   bool _syncing = false;
   bool _obscurePass = true;
 
-  Map<String, bool> _healthStatus = {};
-  Map<String, bool> _checkingStatus = {};
+  // 规则测活状态
+  Map<String, bool> _healthStatus = {}; 
+  Map<String, bool> _checkingStatus = {}; 
   bool _checkingAll = false;
 
   @override
@@ -44,11 +46,13 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Future<void> _loadWebdavSettings() async {
     final prefs = await SharedPreferences.getInstance();
-    setState(() {
-      _urlController.text = prefs.getString('webdav_url') ?? '';
-      _userController.text = prefs.getString('webdav_user') ?? '';
-      _passController.text = prefs.getString('webdav_pass') ?? '';
-    });
+    if (mounted) {
+      setState(() {
+        _urlController.text = prefs.getString('webdav_url') ?? '';
+        _userController.text = prefs.getString('webdav_user') ?? '';
+        _passController.text = prefs.getString('webdav_pass') ?? '';
+      });
+    }
   }
 
   Future<void> _saveWebdavSettings() async {
@@ -58,14 +62,17 @@ class _SettingsPageState extends State<SettingsPage> {
     await prefs.setString('webdav_pass', _passController.text.trim());
   }
 
+  // ==================== WebDAV 同步 ====================
   Future<void> _doBackup() async {
     setState(() => _syncing = true);
     await _saveWebdavSettings();
     try {
       await SyncService.backupData();
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('✅ 备份成功')));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('✅ 云端备份成功'), backgroundColor: Colors.green));
+    } on AppException catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('备份失败: ${e.message}'), backgroundColor: Colors.red));
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('备份失败: $e'), backgroundColor: Colors.red));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('备份异常: $e'), backgroundColor: Colors.red));
     } finally {
       if (mounted) setState(() => _syncing = false);
     }
@@ -89,21 +96,25 @@ class _SettingsPageState extends State<SettingsPage> {
     await _saveWebdavSettings();
     try {
       await SyncService.restoreData();
-      await _loadRules();
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('✅ 恢复成功，数据已同步')));
+      await _loadRules(); // 刷新最新规则
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('✅ 恢复成功，数据已同步'), backgroundColor: Colors.green));
+    } on AppException catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('恢复失败: ${e.message}'), backgroundColor: Colors.red));
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('恢复失败: $e'), backgroundColor: Colors.red));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('恢复异常: $e'), backgroundColor: Colors.red));
     } finally {
       if (mounted) setState(() => _syncing = false);
     }
   }
 
+  // ==================== 规则测活 ====================
   Future<void> _checkRuleHealth(AnimeRule rule) async {
     setState(() => _checkingStatus[rule.id] = true);
     try {
-      final xpath = SelectorEngine();
+      final engine = SelectorEngine(); // 🔥 改用 SelectorEngine
       final url = rule.baseUrl.replaceAll('{keyword}', '');
-      await xpath.fetchHtml(url);
+      // 使用轻量 HTTP 探测主页是否存活
+      await engine.fetchHtml(url, timeout: const Duration(seconds: 10));
       if (mounted) setState(() => _healthStatus[rule.id] = true);
     } catch (_) {
       if (mounted) setState(() => _healthStatus[rule.id] = false);
@@ -117,23 +128,20 @@ class _SettingsPageState extends State<SettingsPage> {
       _checkingAll = true;
       _healthStatus.clear();
     });
+    // 串行检测，防止瞬间开启过多 WebView 导致内存溢出
     for (var rule in _rules) {
+      if (!mounted) break;
       await _checkRuleHealth(rule);
     }
     if (mounted) setState(() => _checkingAll = false);
   }
 
+  // ==================== 规则拉取与下载 ====================
   Future<void> _showKazumiRules() async {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => const Center(child: CircularProgressIndicator()),
-    );
-
+    showDialog(context: context, barrierDismissible: false, builder: (_) => const Center(child: CircularProgressIndicator()));
     try {
       final kz = KazumiService();
       final indexList = await kz.fetchRuleIndex();
-
       if (!mounted) return;
       Navigator.of(context, rootNavigator: true).pop(); 
 
@@ -152,12 +160,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   AppBar(
                     title: const Text('选择要导入的规则'),
                     automaticallyImplyLeading: false,
-                    actions: [
-                      IconButton(
-                        icon: const Icon(Icons.close),
-                        onPressed: () => Navigator.pop(sheetContext),
-                      )
-                    ],
+                    actions: [IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(sheetContext))],
                   ),
                   Expanded(
                     child: ListView.builder(
@@ -172,7 +175,7 @@ class _SettingsPageState extends State<SettingsPage> {
                           title: Text(name),
                           subtitle: Text(item['baseUrl'] ?? ''),
                           trailing: const Icon(Icons.download_for_offline_outlined),
-                          onTap: () async {
+                          onTap: () {
                             Navigator.pop(sheetContext);
                             _downloadAndSave(kz, fileName, name);
                           },
@@ -186,23 +189,21 @@ class _SettingsPageState extends State<SettingsPage> {
           );
         },
       );
+    } on AppException catch (e) {
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop(); 
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('拉取失败: ${e.message}'), backgroundColor: Colors.red));
+      }
     } catch (e) {
       if (mounted) {
         Navigator.of(context, rootNavigator: true).pop(); 
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('索引拉取失败: $e')),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('拉取异常: $e'), backgroundColor: Colors.red));
       }
     }
   }
 
   Future<void> _downloadAndSave(KazumiService kz, String fileName, String ruleName) async {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => const Center(child: CircularProgressIndicator()),
-    );
-
+    showDialog(context: context, barrierDismissible: false, builder: (_) => const Center(child: CircularProgressIndicator()));
     try {
       final detail = await kz.fetchRuleDetail(fileName);
       final converted = kz.convertKazumiRule(detail);
@@ -217,21 +218,28 @@ class _SettingsPageState extends State<SettingsPage> {
         episodeLinkSelector: converted['episodeLinkSelector'] ?? '',
       );
 
+      // 保存前调用模型校验
+      newRule.validate();
+      
       final success = await _storage.upsertRule(newRule);
+      if (!mounted) return;
+      Navigator.of(context, rootNavigator: true).pop();
 
+      if (success) {
+        _loadRules();
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已导入: ${newRule.name}'), backgroundColor: Colors.green));
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('导入失败，写入存储出错'), backgroundColor: Colors.red));
+      }
+    } on RuleFormatException catch (e) {
       if (mounted) {
         Navigator.of(context, rootNavigator: true).pop();
-        if (success) {
-          _loadRules();
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已导入: ${newRule.name}')));
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('导入失败，请检查存储'), backgroundColor: Colors.red));
-        }
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已跳过该源: ${e.message}'), backgroundColor: Colors.orange));
       }
     } catch (e) {
       if (mounted) {
         Navigator.of(context, rootNavigator: true).pop();
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('下载失败: $e'), backgroundColor: Colors.red));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('下载或解析失败: $e'), backgroundColor: Colors.red));
       }
     }
   }
@@ -261,6 +269,7 @@ class _SettingsPageState extends State<SettingsPage> {
       ),
       body: ListView(
         children: [
+          // ==================== 规则管理区 ====================
           const Padding(
             padding: EdgeInsets.fromLTRB(16, 16, 16, 4),
             child: Text('规则管理 (右上角可一键测活)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
@@ -282,18 +291,46 @@ class _SettingsPageState extends State<SettingsPage> {
                           ? Colors.grey
                           : (_healthStatus[r.id]! ? Colors.green : Colors.red),
                     ),
-              title: Text(r.name.isEmpty ? '(未命名规则)' : r.name),
-              subtitle: Text(r.baseUrl, maxLines: 1, overflow: TextOverflow.ellipsis),
+              title: Row(
+                children: [
+                  Expanded(child: Text(r.name.isEmpty ? '(未命名规则)' : r.name, maxLines: 1, overflow: TextOverflow.ellipsis)),
+                  // 展示信任分
+                  if (r.trustScore > 0.6) 
+                    const Padding(
+                      padding: EdgeInsets.only(left: 8),
+                      child: Text('🔥', style: TextStyle(fontSize: 14)),
+                    ),
+                ],
+              ),
+              // 🔥 核心修改：展示健康度状态
+              subtitle: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(r.baseUrl, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  const SizedBox(height: 2),
+                  if (r.lastFailureReason.isNotEmpty)
+                    Text(
+                      '❌ 失败(${r.lastFailureStage}): ${r.lastFailureReason}',
+                      style: const TextStyle(color: Colors.red, fontSize: 12),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    )
+                  else if (r.lastSuccessTime > 0)
+                    Text(
+                      '✅ 上次成功: ${DateTime.fromMillisecondsSinceEpoch(r.lastSuccessTime).toString().substring(0, 16)}',
+                      style: const TextStyle(color: Colors.green, fontSize: 12),
+                    )
+                  else
+                    const Text('⚪ 尚未测试过', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                ],
+              ),
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   IconButton(
                     icon: const Icon(Icons.edit),
                     onPressed: () async {
-                      await Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (_) => RuleEditPage(rule: r)),
-                      );
+                      await Navigator.push(context, MaterialPageRoute(builder: (_) => RuleEditPage(rule: r)));
                       _loadRules();
                     },
                   ),
@@ -304,7 +341,7 @@ class _SettingsPageState extends State<SettingsPage> {
                       if (success) {
                         _loadRules();
                       } else if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('删除失败，请检查存储')));
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('删除失败，请检查存储'), backgroundColor: Colors.red));
                       }
                     },
                   ),
@@ -329,10 +366,7 @@ class _SettingsPageState extends State<SettingsPage> {
               label: const Text('手动添加规则'),
               style: OutlinedButton.styleFrom(minimumSize: const Size(double.infinity, 48)),
               onPressed: () async {
-                await Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => RuleEditPage(rule: AnimeRule.empty())),
-                );
+                await Navigator.push(context, MaterialPageRoute(builder: (_) => RuleEditPage(rule: AnimeRule.empty())));
                 _loadRules();
               },
             ),
@@ -342,10 +376,7 @@ class _SettingsPageState extends State<SettingsPage> {
             child: OutlinedButton.icon(
               icon: const Icon(Icons.bug_report),
               label: const Text('规则调试器 (进阶)'),
-              style: OutlinedButton.styleFrom(
-                minimumSize: const Size(double.infinity, 48),
-                foregroundColor: Colors.orange,
-              ),
+              style: OutlinedButton.styleFrom(minimumSize: const Size(double.infinity, 48), foregroundColor: Colors.orange),
               onPressed: () {
                 Navigator.push(context, MaterialPageRoute(builder: (_) => const DebuggerPage()));
               },
@@ -354,6 +385,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
           const Divider(height: 32),
 
+          // ==================== WebDAV 同步区 ====================
           const Padding(
             padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: Text('云端同步 (WebDAV)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
@@ -367,10 +399,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   children: [
                     TextField(
                       controller: _urlController,
-                      decoration: const InputDecoration(
-                        labelText: '服务器地址',
-                        hintText: '例如: https://dav.jianguoyun.com/dav/',
-                      ),
+                      decoration: const InputDecoration(labelText: '服务器地址', hintText: '例如: https://dav.jianguoyun.com/dav/'),
                     ),
                     TextField(
                       controller: _userController,

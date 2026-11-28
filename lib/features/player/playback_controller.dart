@@ -1,6 +1,9 @@
+import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:video_player/video_player.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import '../../services/storage_service.dart';
+import '../../models/playback_record.dart';
+import '../../utils/episode_sort.dart';
 
 enum GestureMode { brightness, volume, seek }
 
@@ -55,35 +58,39 @@ class PlaybackState {
 final playbackControllerProvider = NotifierProvider<PlaybackController, PlaybackState>(PlaybackController.new);
 
 class PlaybackController extends Notifier<PlaybackState> {
-  int _lastSavedPositionMs = 0;
+  final _storage = StorageService();
+  Timer? _saveTimer;
+  
+  // 记录当前播放的上下文（用于存库）
   String _currentUrl = '';
+  String _animeTitle = '';
+  String _episodeTitle = '';
+  String _ruleId = '';
 
   @override
   PlaybackState build() {
     ref.onDispose(() {
-      // 退出页面时，如果没播完，顺便保存一下最终进度
-      _saveProgress(force: true);
       state.controller?.dispose();
+      _saveTimer?.cancel();
     });
     return const PlaybackState();
   }
 
-  Future<void> initialize(String url) async {
-    state.controller?.dispose();
+  Future<void> initialize(String url, {String animeTitle = '未知番剧', String episodeTitle = '未知剧集', String ruleId = ''}) async {
     _currentUrl = url;
-    _lastSavedPositionMs = 0;
+    _animeTitle = animeTitle;
+    _episodeTitle = episodeTitle;
+    _ruleId = ruleId;
 
+    state.controller?.dispose();
     final controller = VideoPlayerController.networkUrl(Uri.parse(url));
     state = state.copyWith(controller: controller, isInitialized: false);
-    
     await controller.initialize();
-    
-    // ⚠️ 恢复断点进度
-    final prefs = await SharedPreferences.getInstance();
-    final savedMs = prefs.getInt('progress_$url') ?? 0;
-    if (savedMs > 0 && savedMs < controller.value.duration.inMilliseconds) {
-      await controller.seekTo(Duration(milliseconds: savedMs));
-      _lastSavedPositionMs = savedMs;
+
+    // 🔥 断点续播：从本地读取上次播放进度
+    final record = await _storage.getPlaybackRecord(url);
+    if (record != null && record.progress > 0) {
+      await controller.seekTo(Duration(milliseconds: record.progress));
     }
 
     controller.addListener(_onTick);
@@ -91,7 +98,6 @@ class PlaybackController extends Notifier<PlaybackState> {
       isInitialized: true,
       duration: controller.value.duration,
     );
-    
     await controller.play();
     state = state.copyWith(isPlaying: true);
   }
@@ -99,7 +105,7 @@ class PlaybackController extends Notifier<PlaybackState> {
   void _onTick() {
     final c = state.controller;
     if (c == null) return;
-
+    
     state = state.copyWith(
       position: c.value.position,
       duration: c.value.duration,
@@ -107,32 +113,29 @@ class PlaybackController extends Notifier<PlaybackState> {
       playbackSpeed: c.value.playbackSpeed,
     );
 
-    // ⚠️ 保存断点进度（节流策略：每跨越 5 秒保存一次）
-    final currentMs = c.value.position.inMilliseconds;
-    if ((currentMs - _lastSavedPositionMs).abs() >= 5000) {
-      _saveProgress();
+    // 🔥 节流保存：每 5 秒触发一次写库
+    if (c.value.isPlaying) {
+      _saveTimer?.cancel();
+      _saveTimer = Timer(const Duration(seconds: 5), _saveProgressToLocal);
     }
   }
 
-  Future<void> _saveProgress({bool force = false}) async {
+  Future<void> _saveProgressToLocal() async {
     final c = state.controller;
-    if (c == null || _currentUrl.isEmpty) return;
-    
-    final currentMs = c.value.position.inMilliseconds;
-    final durationMs = c.value.duration.inMilliseconds;
-    
-    // 如果距离上次保存不足 5 秒，且不是强制保存，直接跳过
-    if (!force && (currentMs - _lastSavedPositionMs).abs() < 5000) return;
-    
-    _lastSavedPositionMs = currentMs;
-    final prefs = await SharedPreferences.getInstance();
-    
-    // 如果播放完毕（距离结尾不到 2 秒），清除进度记录，下次从头播放
-    if (durationMs > 0 && (durationMs - currentMs) < 2000) {
-      await prefs.remove('progress_$_currentUrl');
-    } else {
-      await prefs.setInt('progress_$_currentUrl', currentMs);
-    }
+    if (c == null || !c.value.isInitialized || _currentUrl.isEmpty) return;
+
+    final record = PlaybackRecord(
+      animeTitle: _animeTitle,
+      episodeTitle: _episodeTitle,
+      episodeSort: EpisodeSort.parse(_episodeTitle).episodeNumber,
+      url: _currentUrl,
+      ruleId: _ruleId,
+      progress: c.value.position.inMilliseconds,
+      duration: c.value.duration.inMilliseconds,
+      lastUpdated: DateTime.now().millisecondsSinceEpoch,
+    );
+
+    await _storage.upsertPlaybackRecord(record);
   }
 
   void updateGestureMode(GestureMode mode) {

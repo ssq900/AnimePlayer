@@ -2,9 +2,9 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import '../models/rule.dart';
-import '../services/storage_service.dart';
-import '../services/selector_engine.dart';
-import '../services/notification_service.dart';
+import '../data/storage_service.dart';
+import '../domain/selector_engine.dart';
+import '../platform/notification_service.dart';
 
 class SchedulePage extends StatefulWidget {
   final List<AnimeRule> rules;

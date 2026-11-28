@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/rule.dart';
-import '../services/storage_service.dart';
+import '../data/storage_service.dart';
 import 'schedule_page.dart';
 
 class FollowPage extends StatefulWidget {

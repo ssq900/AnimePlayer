@@ -1,4 +1,4 @@
-import '../services/exceptions.dart';
+import '../core/exceptions.dart';
 
 class AnimeRule {
   final String id;
@@ -20,6 +20,9 @@ class AnimeRule {
   // 标记：是否已经成功迁移到 CSS 模式
   final bool isCssBased;
 
+  // 🔥 新增：抓取策略（direct / webview / iframe）
+  final String fetchStrategy;
+
   final int successCount;
   final int failCount;
 
@@ -36,6 +39,7 @@ class AnimeRule {
     this.episodeListSelectorCss = '',
     this.episodeLinkSelectorCss = '',
     this.isCssBased = false,
+    this.fetchStrategy = 'direct', // 默认为直连
     this.successCount = 0,
     this.failCount = 0,
   });
@@ -62,6 +66,7 @@ class AnimeRule {
         'episodeListSelectorCss': episodeListSelectorCss,
         'episodeLinkSelectorCss': episodeLinkSelectorCss,
         'isCssBased': isCssBased,
+        'fetchStrategy': fetchStrategy,
         'successCount': successCount,
         'failCount': failCount,
       };
@@ -80,18 +85,19 @@ class AnimeRule {
       episodeListSelectorCss: j['episodeListSelectorCss'] ?? '',
       episodeLinkSelectorCss: j['episodeLinkSelectorCss'] ?? '',
       isCssBased: j['isCssBased'] ?? false,
+      fetchStrategy: j['fetchStrategy'] ?? 'direct',
       successCount: j['successCount'] ?? 0,
       failCount: j['failCount'] ?? 0,
     );
   }
 
-  // 复制并修改部分字段
   AnimeRule copyWith({
     String? searchSelectorCss,
     String? animeLinkSelectorCss,
     String? episodeListSelectorCss,
     String? episodeLinkSelectorCss,
     bool? isCssBased,
+    String? fetchStrategy,
   }) {
     return AnimeRule(
       id: this.id,
@@ -106,6 +112,7 @@ class AnimeRule {
       episodeListSelectorCss: episodeListSelectorCss ?? this.episodeListSelectorCss,
       episodeLinkSelectorCss: episodeLinkSelectorCss ?? this.episodeLinkSelectorCss,
       isCssBased: isCssBased ?? this.isCssBased,
+      fetchStrategy: fetchStrategy ?? this.fetchStrategy,
       successCount: this.successCount,
       failCount: this.failCount,
     );

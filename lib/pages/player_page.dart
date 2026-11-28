@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:video_player/video_player.dart';
-import '../features/player/playback_controller.dart';
+import '../platform/playback_controller.dart';
 import '../models/rule.dart';
 
 class PlayerPage extends ConsumerStatefulWidget {

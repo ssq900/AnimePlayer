@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/rule.dart';
-import '../services/storage_service.dart';
+import '../data/storage_service.dart';
 
 class StatsPage extends StatefulWidget {
   const StatsPage({super.key});

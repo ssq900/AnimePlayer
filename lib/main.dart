@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart'; // 新增：引入 Riverpod
 import 'pages/main_layout.dart';
-import 'services/notification_service.dart';
-import 'services/storage_service.dart';
+import 'platform/notification_service.dart';
+import 'data/storage_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();

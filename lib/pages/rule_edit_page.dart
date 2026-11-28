@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/rule.dart';
-import '../data/storage_service.dart';
+import '../services/storage_service.dart';
 import '../core/exceptions.dart'; // 引入异常类
 
 class RuleEditPage extends StatefulWidget {

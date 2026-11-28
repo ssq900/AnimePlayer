@@ -1,7 +1,7 @@
 import 'dart:async';
 import '../core/errors/app_failure.dart';
 import '../models/rule.dart';
-import '../../domain/selector_engine.dart';
+import '../../services/selector_engine.dart';
 
 class SearchResultWithFailure {
   final List<SearchResult> results;

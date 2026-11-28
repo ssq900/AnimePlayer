@@ -2,12 +2,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/rule.dart';
-import '../data/storage_service.dart';
+import '../services/storage_service.dart';
 import '../services/kazumi_service.dart';
 import '../services/sync_service.dart';
 import 'rule_edit_page.dart';
 import 'debugger_page.dart';
-import '../domain/selector_engine.dart';
+import '../services/selector_engine.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});

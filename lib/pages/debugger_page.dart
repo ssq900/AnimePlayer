@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:xml/xml.dart';
-import '../domain/selector_engine.dart';
+import '../services/selector_engine.dart';
 
 // 枚举：分步测试的阶段
 enum DebugStep { search, episodes, media }

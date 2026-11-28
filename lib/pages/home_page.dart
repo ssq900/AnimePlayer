@@ -3,8 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import '../models/rule.dart';
-import '../data/storage_service.dart';
-import '../domain/selector_engine.dart';
+import '../services/storage_service.dart';
+import '../services/selector_engine.dart';
 import 'detail_page.dart';
 
 class HomePage extends StatefulWidget {

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/rule.dart';
-import '../domain/selector_engine.dart';
+import '../services/selector_engine.dart';
 import 'player_page.dart';
 
 class DetailPage extends StatefulWidget {

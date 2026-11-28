@@ -1,14 +1,14 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 // === Data 层 ===
-import '../data/storage_service.dart';
+import '../services/storage_service.dart';
 import '../data/network_client.dart';
 
 // === Platform 层 ===
 import '../platform/webview_engine.dart';
 
 // === Domain 层 ===
-import '../domain/selector_engine.dart';
+import '../services/selector_engine.dart';
 import '../domain/search_repository.dart';
 
 // ==========================================

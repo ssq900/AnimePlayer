@@ -1,7 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/providers.dart';
 import '../../models/rule.dart';
-import '../../services/xpath_service.dart';
+import '../../services/selector_engine.dart';
 import '../../core/errors/app_failure.dart';
 
 final searchProvider = AsyncNotifierProvider<SearchNotifier, List<SearchResult>>(SearchNotifier.new);

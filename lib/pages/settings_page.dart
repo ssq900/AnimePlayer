@@ -7,7 +7,7 @@ import '../services/kazumi_service.dart';
 import '../services/sync_service.dart';
 import 'rule_edit_page.dart';
 import 'debugger_page.dart';
-import '../services/xpath_service.dart';
+import '../services/selector_engine.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -101,7 +101,7 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _checkRuleHealth(AnimeRule rule) async {
     setState(() => _checkingStatus[rule.id] = true);
     try {
-      final xpath = XPathService();
+      final xpath = SelectorEngine();
       final url = rule.baseUrl.replaceAll('{keyword}', '');
       await xpath.fetchHtml(url);
       if (mounted) setState(() => _healthStatus[rule.id] = true);

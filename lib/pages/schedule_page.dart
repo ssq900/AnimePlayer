@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import '../models/rule.dart';
 import '../services/storage_service.dart';
-import '../services/xpath_service.dart';
+import '../services/selector_engine.dart';
 import '../services/notification_service.dart';
 
 class SchedulePage extends StatefulWidget {
@@ -32,7 +32,7 @@ class _SchedulePageState extends State<SchedulePage> {
 
   Future<void> _checkUpdates() async {
     setState(() => _checking = true);
-    final xpath = XPathService();
+    final xpath = SelectorEngine();
     int updatedCount = 0;
 
     for (int i = 0; i < _schedules.length; i++) {

@@ -4,7 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import '../models/rule.dart';
 import '../services/storage_service.dart';
-import '../services/xpath_service.dart';
+import '../services/selector_engine.dart';
 import 'detail_page.dart';
 
 class HomePage extends StatefulWidget {
@@ -16,7 +16,7 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final _storage = StorageService();
-  final _xpath = XPathService();
+  final _xpath = SelectorEngine();
   final _searchController = TextEditingController();
   
   List<AnimeRule> _rules = [];

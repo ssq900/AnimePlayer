@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/rule.dart';
-import '../services/xpath_service.dart';
+import '../services/selector_engine.dart';
 import 'player_page.dart';
 
 class DetailPage extends StatefulWidget {
@@ -20,7 +20,7 @@ class DetailPage extends StatefulWidget {
 }
 
 class _DetailPageState extends State<DetailPage> {
-  final _service = XPathService();
+  final _service = SelectorEngine();
   List<EpisodeItem> _episodes = [];
   bool _loading = true;
   String? _error;

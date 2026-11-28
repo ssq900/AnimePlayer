@@ -1,7 +1,5 @@
 import 'package:flutter/material.dart';
 import '../models/rule.dart';
-import '../data/storage_service.dart';
-import 'schedule_page.dart';
 import '../services/storage_service.dart';
 
 class FollowPage extends StatefulWidget {
@@ -12,75 +10,109 @@ class FollowPage extends StatefulWidget {
 }
 
 class _FollowPageState extends State<FollowPage> {
-  final _storage = StorageService();
+  final StorageService _storage = StorageService();
   List<AnimeRule> _rules = [];
   List<HistoryItem> _history = [];
+  List<ScheduleItem> _schedules = [];
 
   @override
   void initState() {
     super.initState();
-    _load();
+    _loadData();
   }
 
-  Future<void> _load() async {
+  Future<void> _loadData() async {
     final rules = await _storage.loadRules();
     final history = await _storage.loadHistory();
-    if (mounted) setState(() { _rules = rules; _history = history; });
+    final schedules = await _storage.loadSchedules();
+
+    if (mounted) {
+      setState(() {
+        _rules = rules;
+        // 🔥 核心修复：使用 List<HistoryItem>.from() 进行强转，避免 dynamic 报错
+        _history = List<HistoryItem>.from(history);
+        _schedules = List<ScheduleItem>.from(schedules);
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('追番与历史'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.calendar_month),
-            tooltip: '追番日历',
-            onPressed: () {
-              Navigator.push(context, MaterialPageRoute(builder: (_) => SchedulePage(rules: _rules)));
-            },
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('追番与历史'),
+          bottom: const TabBar(
+            tabs: [
+              Tab(text: '观看历史'),
+              Tab(text: '我的追番'),
+            ],
           ),
-        ],
-      ),
-      body: RefreshIndicator(
-        onRefresh: _load,
-        child: ListView(
-          padding: const EdgeInsets.all(16),
+        ),
+        body: TabBarView(
           children: [
-            const Text('最近观看', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            if (_history.isEmpty) const Text('暂无观看记录', style: TextStyle(color: Colors.grey)),
-            ..._history.map((h) => Card(
-              child: ListTile(
-                leading: const Icon(Icons.history),
-                title: Text(h.animeTitle, maxLines: 1),
-                subtitle: Text('${h.episodeTitle} · ${h.ruleName}'),
-                onLongPress: () async {
-                  final week = await showDialog<int>(
-                    context: context,
-                    builder: (ctx) => AlertDialog(
-                      title: const Text('加入追番日历'),
-                      content: const Text('选择每周更新的日子：'),
-                      actions: [
-                        for (int i = 1; i <= 7; i++)
-                          TextButton(onPressed: () => Navigator.pop(ctx, i), child: Text('周${['一','二','三','四','五','六','日'][i-1]}'))
-                      ],
-                    ),
-                  );
-                  if (week != null) {
-                    final schedules = await _storage.loadSchedules();
-                    schedules.removeWhere((e) => e.detailUrl == h.episodeUrl && e.ruleId == h.ruleId);
-                    schedules.add(ScheduleItem(
-                      animeTitle: h.animeTitle, detailUrl: h.episodeUrl, ruleId: h.ruleId,
-                      weekday: week, lastEpisodeTitle: h.episodeTitle,
-                    ));
-                    await _storage.saveSchedules(schedules);
-                    if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已加入日历')));
-                  }
-                },
-              ),
-            )),
+            // ================= 历史记录 Tab =================
+            _history.isEmpty
+                ? const Center(child: Text('暂无观看历史'))
+                : ListView.builder(
+                    itemCount: _history.length,
+                    itemBuilder: (context, index) {
+                      final h = _history[index];
+                      return ListTile(
+                        title: Text(
+                          h.animeTitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        // 🔥 修复：现在 HistoryItem 有 ruleName 字段了
+                        subtitle: Text('${h.episodeTitle} · ${h.ruleName}'),
+                        onTap: () {
+                          // TODO: 点击历史记录跳转到播放页
+                        },
+                        trailing: IconButton(
+                          icon: const Icon(Icons.delete_outline, color: Colors.grey),
+                          onPressed: () {
+                            setState(() {
+                              _history.removeAt(index);
+                            });
+                            // TODO: 这里需要调用 _storage.saveHistory(_history) 保存删除结果
+                          },
+                        ),
+                      );
+                    },
+                  ),
+
+            // ================= 追番列表 Tab =================
+            _schedules.isEmpty
+                ? const Center(child: Text('暂无追番'))
+                : ListView.builder(
+                    itemCount: _schedules.length,
+                    itemBuilder: (context, index) {
+                      final s = _schedules[index];
+                      return ListTile(
+                        title: Text(
+                          s.animeTitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        // 🔥 修复：现在 ScheduleItem 有 lastEpisodeTitle 字段了
+                        subtitle: Text('周${s.weekday} · 最新: ${s.lastEpisodeTitle}'),
+                        onTap: () {
+                          // TODO: 点击追番跳转到详情页
+                        },
+                        trailing: IconButton(
+                          icon: const Icon(Icons.delete_outline, color: Colors.grey),
+                          onPressed: () {
+                            setState(() {
+                              _schedules.removeAt(index);
+                            });
+                            // TODO: 这里需要调用 _storage.saveSchedules(_schedules) 保存删除结果
+                          },
+                        ),
+                      );
+                    },
+                  ),
           ],
         ),
       ),

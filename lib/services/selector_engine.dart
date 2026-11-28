@@ -8,7 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:xml/xml.dart' as xml;
 import 'package:xml/xpath.dart';
 import '../models/rule.dart';
-import 'exceptions.dart';
+import '../core/exceptions.dart';
 
 extension XmlNodeExt on xml.XmlNode {
   String get textContent {
@@ -21,38 +21,45 @@ class SelectorEngine {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
   };
 
-  // ==================== 1. 核心网络抓取（前置策略路由） ====================
-  Future<String> fetchHtml(String url, {String? waitForSelector, Duration timeout = const Duration(seconds: 25), String strategy = 'direct'}) async {
+  // ==================== 核心路由：根据策略决定抓取方式 ====================
+  Future<String> fetchHtmlWithStrategy(AnimeRule rule, String url, {String? waitForSelector}) async {
+    if (rule.fetchStrategy == 'webview' || rule.fetchStrategy == 'iframe') {
+      debugPrint('[SelectorEngine] 策略要求直接使用 WebView: $url');
+      return _fetchWithWebView(url, waitForSelector: waitForSelector);
+    }
+    
+    // direct 模式：先尝试 HTTP 直连
+    try {
+      return await _fetchDirect(url);
+    } catch (e) {
+      debugPrint('[SelectorEngine] HTTP 直连失败，自动降级 WebView: $e');
+      return _fetchWithWebView(url, waitForSelector: waitForSelector);
+    }
+  }
+
+  // ==================== 具体执行器：HTTP 直连 ====================
+  Future<String> _fetchDirect(String url) async {
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      throw NetworkException('非法的协议请求: 仅支持 HTTP/HTTPS');
+    }
+    final resp = await http.get(Uri.parse(url), headers: _httpHeaders).timeout(const Duration(seconds: 10));
+    if (resp.statusCode == 200) {
+      final body = utf8.decode(resp.bodyBytes, allowMalformed: true);
+      // 简单拦截 CF 盾
+      if (!body.contains('cf-browser-verification') && body.length > 1000) {
+        return body;
+      }
+      throw NetworkException('疑似触发反爬盾');
+    }
+    throw NetworkException('HTTP 状态码异常: ${resp.statusCode}');
+  }
+
+  // ==================== 具体执行器：WebView ====================
+  Future<String> _fetchWithWebView(String url, {String? waitForSelector, Duration timeout = const Duration(seconds: 25)}) async {
     if (!url.startsWith('http://') && !url.startsWith('https://')) {
       throw NetworkException('非法的协议请求: 仅支持 HTTP/HTTPS');
     }
 
-    // 🔥 策略分派：如果明确指定了 webview 或 iframe，直接跳过探路
-    if (strategy == 'webview' || strategy == 'iframe') {
-      debugPrint('[SelectorEngine] 规则策略为 $strategy，跳过 HTTP 探测，直接启用 WebView');
-      return _fetchWithWebView(url, waitForSelector: waitForSelector, timeout: timeout);
-    }
-
-    // direct 策略：先探路
-    try {
-      final resp = await http.get(Uri.parse(url), headers: _httpHeaders).timeout(const Duration(seconds: 10));
-      if (resp.statusCode == 200) {
-        final body = utf8.decode(resp.bodyBytes, allowMalformed: true);
-        if (!body.contains('cf-browser-verification') && body.length > 1000) {
-          return body;
-        }
-      }
-    } catch (e) {
-      debugPrint('[SelectorEngine] HTTP probe failed: $e');
-    }
-
-    // direct 策略失败后，兜底降级到 WebView
-    debugPrint('[SelectorEngine] HTTP 降级至 WebView');
-    return _fetchWithWebView(url, waitForSelector: waitForSelector, timeout: timeout);
-  }
-
-  // 🔥 把原本内联的 WebView 代码抽离
-  Future<String> _fetchWithWebView(String url, {String? waitForSelector, required Duration timeout}) async {
     final completer = Completer<String>();
     HeadlessInAppWebView? webView;
     bool isDisposed = false;
@@ -105,7 +112,17 @@ class SelectorEngine {
     }
   }
 
-  // ==================== 2. 网页搜索 ====================
+  // ==================== 调试器兼容用的旧方法 ====================
+  Future<String> fetchHtml(String url, {String? waitForSelector}) async {
+    // 调试器没有 rule 对象，默认走 direct 降级 webview
+    try {
+      return await _fetchDirect(url);
+    } catch (e) {
+      return _fetchWithWebView(url, waitForSelector: waitForSelector);
+    }
+  }
+
+  // ==================== 业务查询接口 ====================
   Future<List<SearchResult>> search(AnimeRule rule, String keyword) async {
     if (rule.searchSelector.trim().isEmpty && rule.searchSelectorCss.trim().isEmpty) {
       throw ParseException('规则错误: 搜索结果容器选择器为空');
@@ -119,14 +136,105 @@ class SelectorEngine {
       searchUrl = '$searchUrl${searchUrl.contains('?') ? '&' : '?'}wd=$encoded';
     }
 
-    // 🔥 传入规则中的策略
-    final rawHtml = await fetchHtml(searchUrl, strategy: rule.fetchStrategy);
+    // 🔥 使用策略路由
+    final rawHtml = await fetchHtmlWithStrategy(rule, searchUrl, waitForSelector: rule.searchSelectorCss.isNotEmpty ? rule.searchSelectorCss : null);
 
     if (rule.isCssBased && rule.searchSelectorCss.isNotEmpty) {
       return _searchWithCss(rawHtml, rule, keyword);
     } else {
       return _searchWithXPath(rawHtml, rule, keyword);
     }
+  }
+
+  Future<List<EpisodeItem>> fetchEpisodes(AnimeRule rule, String detailUrl) async {
+    // 🔥 使用策略路由
+    final rawHtml = await fetchHtmlWithStrategy(rule, detailUrl);
+
+    if (rule.isCssBased && rule.episodeListSelectorCss.isNotEmpty) {
+      final doc = html_parser.parse(rawHtml);
+      final nodes = doc.querySelectorAll(rule.episodeListSelectorCss);
+      if (nodes.isEmpty) throw ParseException('未找到剧集列表 (CSS)');
+      return nodes.map((el) => EpisodeItem(
+        title: el.text.replaceAll(RegExp(r'\s+'), ' ').trim(),
+        link: _absolute(rule.baseUrl, el.attributes['href'] ?? '')
+      )).where((e) => e.link.isNotEmpty).toList();
+    } else {
+      if (rule.episodeListSelector.trim().isEmpty) throw ParseException('剧集列表选择器为空 (XPath)');
+      final doc = _parseHtmlToXmlDoc(rawHtml);
+      final nodes = doc.xpath(_normalizeXpath(rule.episodeListSelector));
+      if (nodes.isEmpty) throw ParseException('未找到剧集列表 (XPath)');
+      return nodes.whereType<xml.XmlElement>().map((el) => EpisodeItem(
+        title: el.textContent.trim(),
+        link: _absolute(rule.baseUrl, el.getAttribute('href') ?? '')
+      )).where((e) => e.link.isNotEmpty).toList();
+    }
+  }
+
+  Future<String> resolveEpisodeLink(AnimeRule rule, String episodeUrl) async {
+    if (rule.episodeLinkSelector.trim().isEmpty && rule.episodeLinkSelectorCss.trim().isEmpty) {
+      return episodeUrl;
+    }
+    
+    // 🔥 使用策略路由
+    final rawHtml = await fetchHtmlWithStrategy(rule, episodeUrl);
+
+    if (rule.isCssBased && rule.episodeLinkSelectorCss.isNotEmpty) {
+      final doc = html_parser.parse(rawHtml);
+      final el = doc.querySelector(rule.episodeLinkSelectorCss);
+      if (el == null) throw ParseException('未找到播放地址 (CSS)');
+      final href = el.attributes['href'] ?? el.attributes['src'] ?? '';
+      return href.isEmpty ? episodeUrl : _absolute(rule.baseUrl, href);
+    } else {
+      final doc = _parseHtmlToXmlDoc(rawHtml);
+      final nodes = doc.xpath(_normalizeXpath(rule.episodeLinkSelector));
+      final el = nodes.whereType<xml.XmlElement>().firstOrNull;
+      if (el == null) throw ParseException('未找到播放地址 (XPath)');
+      final href = el.getAttribute('href') ?? el.getAttribute('src') ?? '';
+      return href.isEmpty ? episodeUrl : _absolute(rule.baseUrl, href);
+    }
+  }
+
+  // ==================== 调试器专用公开接口 ====================
+  xml.XmlDocument parseHtml(String rawHtml) => _parseHtmlToXmlDoc(rawHtml);
+
+  List<xml.XmlElement> findElements(xml.XmlNode context, String expr) {
+    if (expr.trim().isEmpty) return [];
+    try {
+      return context.xpath(_normalizeXpath(expr)).whereType<xml.XmlElement>().toList();
+    } catch (e) {
+      return [];
+    }
+  }
+
+  // ==================== 内部工具方法 ====================
+  xml.XmlDocument _parseHtmlToXmlDoc(String rawHtml) {
+    final htmlDoc = html_parser.parse(rawHtml);
+    htmlDoc.querySelectorAll('script, style, iframe, noscript').forEach((e) => e.remove());
+    
+    String cleaned = htmlDoc.outerHtml;
+    cleaned = cleaned
+        .replaceAll('&nbsp;', '&#160;')
+        .replaceAllMapped(RegExp(r'&(?!(amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)'), (match) => '&amp;');
+    
+    final voidTags = r'img|br|hr|meta|link|input|source|area|base|col|embed|param|track|wbr';
+    cleaned = cleaned.replaceAllMapped(
+      RegExp('<$voidTags\\b([^>]*?)(?<!/)>', caseSensitive: false), 
+      (match) {
+        String tag = match.group(0)!;
+        if (tag.endsWith('/>')) return tag;
+        return tag.substring(0, tag.length - 1) + ' />';
+      }
+    );
+
+    return xml.XmlDocument.parse(cleaned);
+  }
+
+  String _normalizeXpath(String xpath) {
+    String res = xpath.trim();
+    if (!res.startsWith('//') && !res.startsWith('/') && !res.startsWith('./')) res = '//$res';
+    final reg = RegExp(r"""\[@class\s*=\s*['"]([^'"]+)['"]\]""");
+    res = res.replaceAllMapped(reg, (m) => "[contains(@class, '${m.group(1)!.trim()}')]");
+    return res;
   }
 
   List<SearchResult> _searchWithCss(String rawHtml, AnimeRule rule, String keyword) {
@@ -161,84 +269,6 @@ class SelectorEngine {
     if (items.isEmpty) items = containerNodes.toList();
 
     return _filterAndMapXmlResults(items, rule, keyword);
-  }
-
-  // ==================== 3. 提取剧集列表 ====================
-  Future<List<EpisodeItem>> fetchEpisodes(AnimeRule rule, String detailUrl) async {
-    // 🔥 传入规则中的策略
-    final rawHtml = await fetchHtml(detailUrl, strategy: rule.fetchStrategy);
-
-    if (rule.isCssBased && rule.episodeListSelectorCss.isNotEmpty) {
-      final doc = html_parser.parse(rawHtml);
-      final nodes = doc.querySelectorAll(rule.episodeListSelectorCss);
-      if (nodes.isEmpty) throw ParseException('未找到剧集列表 (CSS)');
-      return nodes.map((el) => EpisodeItem(
-        title: el.text.replaceAll(RegExp(r'\s+'), ' ').trim(),
-        link: _absolute(rule.baseUrl, el.attributes['href'] ?? '')
-      )).where((e) => e.link.isNotEmpty).toList();
-    } else {
-      if (rule.episodeListSelector.trim().isEmpty) throw ParseException('剧集列表选择器为空 (XPath)');
-      final doc = _parseHtmlToXmlDoc(rawHtml);
-      final nodes = doc.xpath(_normalizeXpath(rule.episodeListSelector));
-      if (nodes.isEmpty) throw ParseException('未找到剧集列表 (XPath)');
-      return nodes.whereType<xml.XmlElement>().map((el) => EpisodeItem(
-        title: el.textContent.trim(),
-        link: _absolute(rule.baseUrl, el.getAttribute('href') ?? '')
-      )).where((e) => e.link.isNotEmpty).toList();
-    }
-  }
-
-  // ==================== 4. 解析播放地址 ====================
-  Future<String> resolveEpisodeLink(AnimeRule rule, String episodeUrl) async {
-    if (rule.episodeLinkSelector.trim().isEmpty && rule.episodeLinkSelectorCss.trim().isEmpty) {
-      return episodeUrl;
-    }
-    
-    // 🔥 传入规则中的策略
-    final rawHtml = await fetchHtml(episodeUrl, strategy: rule.fetchStrategy);
-
-    if (rule.isCssBased && rule.episodeLinkSelectorCss.isNotEmpty) {
-      final doc = html_parser.parse(rawHtml);
-      final el = doc.querySelector(rule.episodeLinkSelectorCss);
-      if (el == null) throw ParseException('未找到播放地址 (CSS)');
-      final href = el.attributes['href'] ?? el.attributes['src'] ?? '';
-      return href.isEmpty ? episodeUrl : _absolute(rule.baseUrl, href);
-    } else {
-      final doc = _parseHtmlToXmlDoc(rawHtml);
-      final nodes = doc.xpath(_normalizeXpath(rule.episodeLinkSelector));
-      final el = nodes.whereType<xml.XmlElement>().firstOrNull;
-      if (el == null) throw ParseException('未找到播放地址 (XPath)');
-      final href = el.getAttribute('href') ?? el.getAttribute('src') ?? '';
-      return href.isEmpty ? episodeUrl : _absolute(rule.baseUrl, href);
-    }
-  }
-
-  // ==================== 工具类与兼容层 ====================
-  xml.XmlDocument _parseHtmlToXmlDoc(String rawHtml) {
-    final htmlDoc = html_parser.parse(rawHtml);
-    htmlDoc.querySelectorAll('script, style, iframe, noscript').forEach((e) => e.remove());
-    String cleaned = htmlDoc.outerHtml;
-    cleaned = cleaned
-        .replaceAll('&nbsp;', '&#160;')
-        .replaceAllMapped(RegExp(r'&(?!(amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)'), (match) => '&amp;');
-    final voidTags = r'img|br|hr|meta|link|input|source|area|base|col|embed|param|track|wbr';
-    cleaned = cleaned.replaceAllMapped(
-      RegExp('<$voidTags\\b([^>]*?)(?<!/)>', caseSensitive: false), 
-      (match) {
-        String tag = match.group(0)!;
-        if (tag.endsWith('/>')) return tag;
-        return tag.substring(0, tag.length - 1) + ' />';
-      }
-    );
-    return xml.XmlDocument.parse(cleaned);
-  }
-
-  String _normalizeXpath(String xpath) {
-    String res = xpath.trim();
-    if (!res.startsWith('//') && !res.startsWith('/') && !res.startsWith('./')) res = '//$res';
-    final reg = RegExp(r"""\[@class\s*=\s*['"]([^'"]+)['"]\]""");
-    res = res.replaceAllMapped(reg, (m) => "[contains(@class, '${m.group(1)!.trim()}')]");
-    return res;
   }
 
   List<SearchResult> _filterAndMapCssResults(List<dom.Element> items, AnimeRule rule, String keyword) {

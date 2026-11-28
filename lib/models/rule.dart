@@ -106,13 +106,20 @@ class HistoryItem {
   final String episodeTitle;
   final String episodeUrl;
   final String ruleId;
+  final String ruleName; // 🔥 新增：修复找不到 getter 的报错
   final String detailUrl;
   final int timestamp;
 
-  const HistoryItem({required this.animeTitle, required this.episodeTitle, required this.episodeUrl, required this.ruleId, required this.detailUrl, required this.timestamp});
+  const HistoryItem({
+    required this.animeTitle, required this.episodeTitle, required this.episodeUrl, 
+    required this.ruleId, required this.ruleName, required this.detailUrl, required this.timestamp
+  });
 
-  Map<String, dynamic> toJson() => {'animeTitle': animeTitle, 'episodeTitle': episodeTitle, 'episodeUrl': episodeUrl, 'ruleId': ruleId, 'detailUrl': detailUrl, 'timestamp': timestamp};
-  factory HistoryItem.fromJson(Map<String, dynamic> j) => HistoryItem(animeTitle: j['animeTitle'] ?? '', episodeTitle: j['episodeTitle'] ?? '', episodeUrl: j['episodeUrl'] ?? '', ruleId: j['ruleId'] ?? '', detailUrl: j['detailUrl'] ?? '', timestamp: j['timestamp'] ?? 0);
+  Map<String, dynamic> toJson() => {'animeTitle': animeTitle, 'episodeTitle': episodeTitle, 'episodeUrl': episodeUrl, 'ruleId': ruleId, 'ruleName': ruleName, 'detailUrl': detailUrl, 'timestamp': timestamp};
+  factory HistoryItem.fromJson(Map<String, dynamic> j) => HistoryItem(
+    animeTitle: j['animeTitle'] ?? '', episodeTitle: j['episodeTitle'] ?? '', episodeUrl: j['episodeUrl'] ?? '', 
+    ruleId: j['ruleId'] ?? '', ruleName: j['ruleName'] ?? '', detailUrl: j['detailUrl'] ?? '', timestamp: j['timestamp'] ?? 0
+  );
 }
 
 class ScheduleItem {
@@ -121,9 +128,16 @@ class ScheduleItem {
   final int weekday;
   final String lastEpisodeTitle;
   final String episodeUrl;
+  final String ruleId; // 🔥 新增：修复找不到 getter 的报错
 
-  const ScheduleItem({required this.animeTitle, required this.detailUrl, required this.weekday, this.lastEpisodeTitle = '', this.episodeUrl = ''});
+  const ScheduleItem({
+    required this.animeTitle, required this.detailUrl, required this.weekday, 
+    this.lastEpisodeTitle = '', this.episodeUrl = '', this.ruleId = ''
+  });
 
-  Map<String, dynamic> toJson() => {'animeTitle': animeTitle, 'detailUrl': detailUrl, 'weekday': weekday, 'lastEpisodeTitle': lastEpisodeTitle, 'episodeUrl': episodeUrl};
-  factory ScheduleItem.fromJson(Map<String, dynamic> j) => ScheduleItem(animeTitle: j['animeTitle'] ?? '', detailUrl: j['detailUrl'] ?? '', weekday: j['weekday'] ?? 1, lastEpisodeTitle: j['lastEpisodeTitle'] ?? '', episodeUrl: j['episodeUrl'] ?? '');
+  Map<String, dynamic> toJson() => {'animeTitle': animeTitle, 'detailUrl': detailUrl, 'weekday': weekday, 'lastEpisodeTitle': lastEpisodeTitle, 'episodeUrl': episodeUrl, 'ruleId': ruleId};
+  factory ScheduleItem.fromJson(Map<String, dynamic> j) => ScheduleItem(
+    animeTitle: j['animeTitle'] ?? '', detailUrl: j['detailUrl'] ?? '', weekday: j['weekday'] ?? 1, 
+    lastEpisodeTitle: j['lastEpisodeTitle'] ?? '', episodeUrl: j['episodeUrl'] ?? '', ruleId: j['ruleId'] ?? ''
+  );
 }

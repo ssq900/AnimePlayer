@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:canvas_danmaku/canvas_danmaku.dart';
-import '../domain/danmaku_provider.dart';
+import 'package:canvas_danmaku/canvas_danmaku.dart' as canvas; // 🔥 核心修复：使用别名防止类名冲突
+import '../services/danmaku_provider.dart';
 
 class DanmakuOverlay extends StatefulWidget {
   final List<DanmakuItem> danmakus;
@@ -15,7 +15,7 @@ class DanmakuOverlay extends StatefulWidget {
 }
 
 class _DanmakuOverlayState extends State<DanmakuOverlay> {
-  DanmakuController? _controller;
+  canvas.DanmakuController? _controller;
   int _lastPositionMs = 0;
   int _sentIndex = 0;
 
@@ -33,7 +33,6 @@ class _DanmakuOverlayState extends State<DanmakuOverlay> {
       if (widget.isPlaying) { _controller?.resume(); } else { _controller?.pause(); }
     }
 
-    // 移除不支持的 speed 参数，改用 updateOption 切换可见性等基础设置
     final currentMs = (widget.currentPosition * 1000).toInt();
     final diff = (currentMs - _lastPositionMs).abs();
     
@@ -53,38 +52,36 @@ class _DanmakuOverlayState extends State<DanmakuOverlay> {
     if (_controller == null) return;
     while (_sentIndex < widget.danmakus.length && widget.danmakus[_sentIndex].time * 1000 <= currentMs + 500) {
       final item = widget.danmakus[_sentIndex];
-      _controller!.addDanmaku(DanmakuContentItem(item.text, color: Color(item.color), type: _parseType(item.type)));
+      _controller!.addDanmaku(canvas.DanmakuContentItem(item.text, color: Color(item.color), type: _parseType(item.type)));
       _sentIndex++;
     }
   }
 
-  DanmakuItemType _parseType(int type) {
+  canvas.DanmakuItemType _parseType(int type) {
     switch (type) {
-      case 1: return DanmakuItemType.top;
-      case 2: return DanmakuItemType.bottom;
-      default: return DanmakuItemType.scroll;
+      case 1: return canvas.DanmakuItemType.top;
+      case 2: return canvas.DanmakuItemType.bottom;
+      default: return canvas.DanmakuItemType.scroll;
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return IgnorePointer(
-      child: DanmakuScreen(
+      child: canvas.DanmakuScreen(
         createdController: (controller) {
           _controller = controller;
-          // 移除 speed 设置
           _controller!.updateOption(_controller!.option.copyWith(
             area: 0.8, fontSize: 16, hideTop: false, hideBottom: false, hideScroll: false,
           ));
         },
-        option: DanmakuOption(area: 0.8, fontSize: 16, duration: 8),
+        option: canvas.DanmakuOption(area: 0.8, fontSize: 16, duration: 8),
       ),
     );
   }
 
   @override
   void dispose() {
-    // 移除不存在的方法
     _controller = null;
     super.dispose();
   }

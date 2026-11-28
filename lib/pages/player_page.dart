@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:video_player/video_player.dart';
-import '../platform/playback_controller.dart';
+import '../features/player/playback_controller.dart';
 import '../models/rule.dart';
+import '../widgets/danmaku_overlay.dart'; // 🔥 引入我们刚写的弹幕层
 
 class PlayerPage extends ConsumerStatefulWidget {
-  final String? videoUrl;       // ⚠️ 改为可选，不再强制 required
+  final String? videoUrl;
   final String? episodeUrl;
   final String? title;          
   final String? animeTitle;     
@@ -14,7 +15,7 @@ class PlayerPage extends ConsumerStatefulWidget {
 
   const PlayerPage({
     super.key, 
-    this.videoUrl,              // ⚠️ 去掉 required
+    this.videoUrl,              
     this.episodeUrl,
     this.title,                 
     this.animeTitle,            
@@ -31,7 +32,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      // 优先用 videoUrl，如果为空则用 episodeUrl
       final url = (widget.videoUrl != null && widget.videoUrl!.isNotEmpty) 
           ? widget.videoUrl! 
           : (widget.episodeUrl ?? '');
@@ -39,6 +39,19 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
       if (url.isNotEmpty) {
         ref.read(playbackControllerProvider.notifier).initialize(url);
       }
+    });
+  }
+
+  // 🔥 生成测试弹幕的数据源
+  List<DanmakuItem> _mockDanmakus() {
+    // 生成 200 条测试弹幕
+    return List.generate(200, (index) {
+      return DanmakuItem(
+        time: index * 0.5, // 每 0.5 秒发一条
+        text: '测试弹幕 $index 号，Canvas 高性能渲染',
+        color: index % 3 == 0 ? 0xFF0000 : 0xFFFFFF, // 部分红色，部分白色
+        type: index % 10 == 0 ? 1 : 0, // 每 10 条发一条顶部固定弹幕
+      );
     });
   }
 
@@ -92,12 +105,25 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
         },
         child: Stack(
           children: [
+            // 1. 视频渲染层
             Center(
               child: AspectRatio(
                 aspectRatio: aspect,
                 child: VideoPlayer(controller),
               ),
             ),
+            
+            // 2. Canvas 弹幕层 (挂载在这里，接收播放器状态)
+            Positioned.fill(
+              child: DanmakuOverlay(
+                danmakus: _mockDanmakus(), // 注入测试数据
+                currentPosition: state.position.inMilliseconds / 1000.0, // 转化为秒
+                isPlaying: state.isPlaying,
+                playbackSpeed: state.playbackSpeed,
+              ),
+            ),
+
+            // 3. 底部进度条
             Positioned(
               bottom: 0,
               left: 0,
